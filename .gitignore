@@ -1,0 +1,14 @@
+bin/
+obj/
+.vs/
+.idea/
+*.user
+*.suo
+*.jsonl
+*.etl
+*.dmp
+*.pdb
+*.log
+*.tmp
+captures/
+symbols/
