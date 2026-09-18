@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Reflection.PortableExecutable;
 using System.Security.Principal;
 using System.Text.Json;
 using Windows.Foundation.Metadata;
@@ -182,11 +183,35 @@ internal static class Program
         {
             using (process)
             {
-                try { candidates.Add(new IeCandidate((uint)process.Id, "iexplore", "New IE executable detected before module inspection")); }
+                try { candidates.Add(new IeCandidate((uint)process.Id, "iexplore", ProcessArchitecture(process), "New IE executable detected before module inspection")); }
                 catch (InvalidOperationException) { }
             }
         }
         return candidates;
+    }
+
+    private static string ProcessArchitecture(System.Diagnostics.Process process)
+    {
+        try
+        {
+            var path = process.MainModule?.FileName;
+            if (string.IsNullOrEmpty(path)) return "Unknown";
+            using var stream = File.OpenRead(path);
+            using var reader = new PEReader(stream, PEStreamOptions.LeaveOpen);
+            return reader.PEHeaders.CoffHeader.Machine switch
+            {
+                Machine.I386 => "x86",
+                Machine.Amd64 => "x64",
+                Machine.Arm64 => "ARM64",
+                Machine.Arm or Machine.ArmThumb2 => "ARM",
+                var machine => $"0x{(ushort)machine:X4}"
+            };
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException
+            or System.ComponentModel.Win32Exception or InvalidOperationException or BadImageFormatException)
+        {
+            return "Unknown";
+        }
     }
 
     internal static List<IeCandidate> FindIeProcesses(bool reportSkipped = true)
@@ -203,12 +228,12 @@ internal static class Program
                     if (!IsBrowserCandidate(name)) continue;
                     if (name.Equals("iexplore", StringComparison.OrdinalIgnoreCase))
                     {
-                        candidates.Add(new IeCandidate((uint)process.Id, name, "IE executable; may be broker or content process"));
+                        candidates.Add(new IeCandidate((uint)process.Id, name, ProcessArchitecture(process), "IE executable; may be broker or content process"));
                     }
                     else if (process.Modules.Cast<System.Diagnostics.ProcessModule>()
                         .Any(module => module.ModuleName.Equals("mshtml.dll", StringComparison.OrdinalIgnoreCase)))
                     {
-                        candidates.Add(new IeCandidate((uint)process.Id, name, "MSHTML module loaded"));
+                        candidates.Add(new IeCandidate((uint)process.Id, name, ProcessArchitecture(process), "MSHTML module loaded"));
                     }
                 }
                 catch (Exception error) when (error is System.ComponentModel.Win32Exception
@@ -225,9 +250,9 @@ internal static class Program
 
     private static void PrintCandidates(IReadOnlyList<IeCandidate> candidates, TextWriter output)
     {
-        output.WriteLine("PID\tPROCESS\tDETECTION");
+        output.WriteLine("PID\tPROCESS\tARCH\tDETECTION");
         foreach (var candidate in candidates)
-            output.WriteLine($"{candidate.ProcessId}\t{candidate.Name}\t{candidate.Reason}");
+            output.WriteLine($"{candidate.ProcessId}\t{candidate.Name}\t{candidate.Architecture}\t{candidate.Reason}");
         if (candidates.Count == 0)
             output.WriteLine("No IE candidates found. Open a page in Edge IE mode first. Module access or architecture restrictions can hide candidates; an explicit PID is still supported.");
         else
@@ -452,6 +477,12 @@ internal static class Program
         if (!IsBrowserCandidate("IEXPLORE") || !IsBrowserCandidate("msedge")
             || IsBrowserCandidate("msedgewebview2") || IsBrowserCandidate("notepad"))
             throw new Exception("Browser candidate filter test failed.");
+        using (var currentProcess = System.Diagnostics.Process.GetCurrentProcess())
+        {
+            var architecture = ProcessArchitecture(currentProcess);
+            if (architecture is not ("x86" or "x64" or "ARM" or "ARM64"))
+                throw new Exception($"Process architecture detection failed: {architecture}.");
+        }
         if (Parse(new[] { "123", "--seconds", "1" }) != new Options(123, 1, 0))
             throw new Exception("Options test failed.");
         foreach (var invalid in new[] { new[] { "0" }, new[] { "123", "--seconds", "0" },
@@ -472,7 +503,7 @@ internal static class Program
         Console.WriteLine("PASS: candidate filter, options, bounds, full headers and URL capture. No capture was started.");
     }
 
-    internal sealed record IeCandidate(uint ProcessId, string Name, string Reason);
+    internal sealed record IeCandidate(uint ProcessId, string Name, string Architecture, string Reason);
     private static async Task<(long Bytes, long Chunks)> StreamBody(Stream input, CancellationToken cancellation, Action<long, ReadOnlyMemory<byte>> emit)
     {
         var buffer = new byte[32768];

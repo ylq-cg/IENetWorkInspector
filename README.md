@@ -19,6 +19,7 @@ project is not affiliated with Fiddler or its publisher.
 ## Features
 
 - Enumerate IE candidate processes or enter a target PID manually.
+- Show each candidate process's executable architecture (`x86`, `x64`, ARM).
 - Inspect sessions by method, host, URL, status, content type and request timing.
 - Separate request and response Headers, Body and JSON views.
 - Filter cached sessions by text, status class, or missing responses.
@@ -175,6 +176,9 @@ capture has started. Stop requests normal worker cleanup; closing the window
 waits for cleanup rather than killing the worker. Windows requests administrator
 approval before the UI starts, and its worker processes inherit that token.
 
+Click **Choose...** to open a resizable process table with separate PID, process,
+architecture and detection columns. Double-click a row to select it.
+
 For a browser that is not running yet, click **Auto Capture** first and then open
 the IE-mode page. The UI checks every 20 ms for a newly created `iexplore.exe`
 and every 100 ms for an Edge process that loads MSHTML, then starts capture as
@@ -186,11 +190,13 @@ The table correlates request, response, body and timing events by activity ID.
 The Fiddler-style workspace has a menu and capture toolbar across the top,
 sessions and a Quick filter bar on the left, and Statistics, Inspectors and Log
 tabs on the right. Request and Response inspectors are stacked vertically.
-Each inspector has Headers, TextView, SyntaxView, ImageView, HexView, WebView,
-Auth, Cookies, Raw and JSON tabs. SyntaxView formats captured JSON/XML bodies,
-ImageView decodes supported complete image bodies, and HexView renders a bounded
-byte preview. WebView renders captured HTML with scripts and external requests
-disabled. Auth/Cookies show captured header values without redaction. Raw is
+Request provides Headers, TextView, SyntaxView, HexView, Auth, Cookies, Raw and
+JSON. Response additionally provides ImageView and WebView because those views
+render response resources rather than outbound request payloads. SyntaxView
+formats captured JSON/XML bodies, ImageView decodes supported complete image
+bodies, and HexView renders a bounded byte preview. WebView renders captured
+HTML with scripts and external requests disabled. Auth/Cookies show captured
+header values without redaction. Raw is
 explicitly a reconstruction from public API metadata,
 not original wire bytes. JSON shows the corresponding request/response event.
 TextView shows a bounded UTF-8 preview (replacement characters can occur at chunk
@@ -210,6 +216,8 @@ fix does not establish why a given provider omitted request/response events.
 Filter sessions by URL, host, method, status or content type and optionally by
 2xx, 3xx, errors or pending responses. Filters only affect displayed rows;
 export still includes ALL retained events, including filtered-out sessions.
+The URL/text filter fills the available bar width, while the status selector is
+sized from its longest item so labels such as **All statuses** remain visible.
 The compact table shows session number, result, method, protocol, host and URL.
 Use **View > Extended Session Columns** to also show duration, content type and
 start time; narrow windows can scroll the columns horizontally.
