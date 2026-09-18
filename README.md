@@ -7,13 +7,14 @@ local persistence, JSONL export, and a command-line interface.
 
 This is an experimental, independent tool, not an official Microsoft product
 or a supported replacement for F12. It does not restore legacy F12 components,
-install a service, configure a proxy, trust certificates, or automatically elevate.
+install a service, configure a proxy, trust certificates, or change security policy.
 The inspector layout is inspired by familiar network debugging tools; this
 project is not affiliated with Fiddler or its publisher.
 
 > **Privacy:** The desktop UI captures available request/response bodies by
 > default and automatically writes events to disk. Use only traffic you are
-> authorized to inspect. Header redaction is not comprehensive anonymization.
+> authorized to inspect. URLs and HTTP headers are stored without redaction,
+> including cookies, authorization values, query strings and other secrets.
 
 ## Features
 
@@ -34,10 +35,13 @@ project is not affiliated with Fiddler or its publisher.
 - [.NET 9 SDK](https://dotnet.microsoft.com/download/dotnet/9.0) to build and use
   the launch script; the .NET 9 Windows Desktop Runtime to run a built application.
   .NET 9 is an older runtime target; review its support lifecycle before deployment.
+- Microsoft Edge WebView2 Runtime for the isolated captured-HTML preview. It is
+  normally installed with Microsoft Edge on supported Windows systems.
 - An existing IE-mode test page and access to the process that issues its requests.
-- Sufficient process and ETW permissions. Standard-user capture may fail with
-  `0x80070005`. Use an approved elevated terminal when appropriate; elevation
-  alone does not guarantee access to every process or provider.
+- Administrator approval at startup. The executable declares
+  `requireAdministrator`, so Windows displays a UAC prompt when the current
+  process is not elevated. Elevation alone does not guarantee access to every
+  process or provider.
 
 ## Quick start
 
@@ -49,20 +53,68 @@ cd IENetWorkInspector
 Open-UI.cmd
 ```
 
-The script builds the project and starts the newly built UI. If a previous
-instance locks the output files, save your results and close it before retrying.
-The script never requests elevation. If elevated capture is approved, open an
-administrator Command Prompt yourself and run the same script there.
+The script builds the project and starts the newly built UI. Windows requests
+administrator approval before the application opens. If a previous instance
+locks the output files, save your results and close it before retrying.
 
-1. Open the target page in Microsoft Edge IE mode.
-2. Click **Refresh**, then select a candidate process or enter its PID.
-3. Click **Start** and wait for the status to show **Capturing**.
-4. Refresh the page or reproduce the operation under investigation.
-5. Select a session to inspect its request, response and timing.
-6. Click **Stop**, then **Export JSONL** to copy all persisted events.
+1. For an existing IE-mode page, click **Refresh**, select its process, then
+  click **Start Capture**. For a browser that is not open yet, click
+  **Auto Capture** first and then open the IE-mode page.
+2. Wait for the status to show **Capturing**.
+3. Refresh the page or reproduce the operation under investigation.
+4. Select a session to inspect its request, response and timing.
+5. Click **Stop**, then **Export JSONL** to copy all persisted events.
 
 Selecting an IE candidate is a heuristic, not proof that it handles the page's
 network requests. No website or traffic capture starts automatically on UI launch.
+
+## Avoid cached 304 responses
+
+An HTTP `304 Not Modified` response intentionally contains no response body, so
+ImageView, WebView and body inspectors cannot reconstruct the cached resource.
+This application uses `HttpDiagnosticProvider`, a passive diagnostics API: it
+cannot disable the browser cache, remove conditional headers such as
+`If-None-Match` or `If-Modified-Since`, or turn a `304` into a `200`.
+
+For the most reliable first-load capture without IEChooser:
+
+1. Close every Microsoft Edge and Internet Explorer window and allow their
+  background processes to exit. A running browser can retain an in-memory cache.
+2. Start IE Network Inspector and approve the UAC prompt.
+3. Click **Clear IE Cache** and confirm. This invokes the Windows Internet Options
+  cache-only cleanup for the current user; it does not select cookies, history
+  or saved passwords.
+4. Click **Auto Capture** before opening the browser.
+5. Open the target page in Edge IE mode. The application detects a new
+  `iexplore.exe` every 20 ms, with a 100 ms MSHTML-in-Edge fallback, and starts
+  capture automatically.
+6. Wait for **Capturing**, then navigate or hard-refresh with `Ctrl+F5`.
+
+Auto Capture reduces the process-start race but cannot guarantee that the very
+first request is observed. A session containing only a `completed` event means
+capture attached after that request had already started; missing request,
+response and body events cannot be reconstructed.
+
+For browser-controlled cache disabling, use the Windows IEChooser/F12 tool:
+
+1. Open the target page in Edge IE mode.
+2. Press `Win+R` and run:
+
+  ```text
+  C:\Windows\System32\F12\IEChooser.exe
+  ```
+
+  On 64-bit Windows, `C:\Windows\SysWOW64\F12\IEChooser.exe` may also be
+  available.
+3. Select the target IE-mode page in IEChooser.
+4. Open its Network tool and enable **Always refresh from server** / disable
+  cache, then keep IEChooser attached.
+5. Start capture in IE Network Inspector and refresh the page.
+
+IEChooser can control the IE engine's cache behavior because it is an internal
+browser debugging tool. This project does not call private F12 interfaces and
+does not reproduce that switch. If the server, an enterprise proxy or a CDN still
+returns cached content, use a test URL with a unique query parameter when allowed.
 
 ## Public APIs
 
@@ -105,7 +157,7 @@ Microsoft product support commitment for this tool.
 
 ## Desktop UI
 
-Double-click `Open-UI.cmd`, or run in your existing approved administrator CMD:
+Double-click `Open-UI.cmd`, or run it from Command Prompt:
 
 ```cmd
 cd IENetWorkInspector
@@ -118,21 +170,36 @@ output is locked, the launcher stops after the build error instead of silently
 starting a stale version. Save and close that window first.
 
 No arguments also opens the UI. Refresh the process list, select an IE candidate
-or type a PID, and click Start. Reproduce the request after the status indicates
+or type a PID, and click Start Capture. Reproduce the request after the status indicates
 capture has started. Stop requests normal worker cleanup; closing the window
-waits for cleanup rather than killing the worker. The UI never elevates itself.
+waits for cleanup rather than killing the worker. Windows requests administrator
+approval before the UI starts, and its worker processes inherit that token.
+
+For a browser that is not running yet, click **Auto Capture** first and then open
+the IE-mode page. The UI checks every 20 ms for a newly created `iexplore.exe`
+and every 100 ms for an Edge process that loads MSHTML, then starts capture as
+soon as it can attach. Existing candidates are ignored so
+the new process can be identified unambiguously. This reduces startup loss but
+cannot provide the zero-race guarantee of a system proxy.
 
 The table correlates request, response, body and timing events by activity ID.
-The Fiddler-style layout places sessions on the left and Request/Response
-inspectors on the right. Each inspector has Headers, Body and JSON tabs; JSON
-shows the corresponding request/response event, not a reconstructed wire dump.
-Body shows a bounded UTF-8 preview (replacement characters can occur at chunk
+The Fiddler-style workspace has a menu and capture toolbar across the top,
+sessions and a Quick filter bar on the left, and Statistics, Inspectors and Log
+tabs on the right. Request and Response inspectors are stacked vertically.
+Each inspector has Headers, TextView, SyntaxView, ImageView, HexView, WebView,
+Auth, Cookies, Raw and JSON tabs. SyntaxView formats captured JSON/XML bodies,
+ImageView decodes supported complete image bodies, and HexView renders a bounded
+byte preview. WebView renders captured HTML with scripts and external requests
+disabled. Auth/Cookies show captured header values without redaction. Raw is
+explicitly a reconstruction from public API metadata,
+not original wire bytes. JSON shows the corresponding request/response event.
+TextView shows a bounded UTF-8 preview (replacement characters can occur at chunk
 boundaries or for non-UTF-8 encodings); it does not execute HTML.
 The original body bytes remain in JSONL exports. Missing body events are not
 presented as empty HTTP content. Drag the splitters to resize the panes.
 
 Some activities deliver only `completed`, without request/response events. The
-worker includes the completion event's `RequestedUri` as a sanitized `url` and
+worker includes the completion event's full `RequestedUri` as `url` and
 its `processId`. The grid uses this URL/host when no request event is available;
 method, status and headers remain unknown, not guessed. A later request event
 takes precedence. Rows without either URL source display a missing-information
@@ -143,13 +210,26 @@ fix does not establish why a given provider omitted request/response events.
 Filter sessions by URL, host, method, status or content type and optionally by
 2xx, 3xx, errors or pending responses. Filters only affect displayed rows;
 export still includes ALL retained events, including filtered-out sessions.
-The table includes session number, result, method, host, URL, duration, content
-type and start time; narrow windows can scroll the columns horizontally.
-Select a row for headers, body and timing; the log tab shows exact errors and
+The compact table shows session number, result, method, protocol, host and URL.
+Use **View > Extended Session Columns** to also show duration, content type and
+start time; narrow windows can scroll the columns horizontally.
+ImageView, WebView and the other inspectors only display bodies for sessions
+already present in the left list. Filter for `image`, `javascript` or a file name
+to locate resource sessions. A missing row can mean the selected PID did not issue
+the request, the browser served it from cache, or the diagnostics API emitted no event.
+An HTTP `304 Not Modified` response has no response body; the browser uses its
+local cached copy, which this process-scoped diagnostic stream does not expose.
+Stop capture, click **Clear IE Cache**, start capture again, then hard-refresh to
+obtain a `200` response if an ImageView/WebView body preview is required. The
+button asks for confirmation and invokes the Windows Internet Options cache-only
+cleanup for the current user; it does not select cookies, history or passwords.
+Close every Edge/IE window and background process before clearing, then reopen
+the browser. A running browser can retain validators in its in-memory cache.
+Select a row for headers, body and statistics; the Log tab shows exact errors and
 the worker's effective permissions. UI capture always includes available bodies;
 there are no duration, body checkbox or body-size controls. Clicking Start begins
 capture until you click Stop or close the window (errors can still terminate it).
-The duration column measures request-sent to response-completed only when both
+The optional duration column measures request-sent to response-completed only when both
 timestamps are valid; it is not total page-load or DNS-to-completion time.
 Export copies ALL persisted JSON Lines after capture stops, including events
 no longer cached in the UI. Starting again prompts before clearing the view.
@@ -173,8 +253,8 @@ Every UI event is appended to a unique UTF-8 JSONL journal under:
 %LOCALAPPDATA%\IeNetworkDemo\Captures
 ```
 
-Clear and Export are on the process-selection toolbar; there is no directory
-button. Open the path above in File Explorer to access journals. Files are flushed
+Clear, Clear IE Cache and Export are on the process-selection toolbar; there is
+no directory button. Open the path above in File Explorer to access journals. Files are flushed
 to the OS after each record, retained after Clear/new capture/window close,
 and are not automatically deleted or rotated. Normal flushing is not a promise
 of power-loss durability. Forced termination can lose queued/unflushed events
@@ -182,7 +262,7 @@ or leave an incomplete final record. The journal path is shown in the run log.
 
 The live grid retains up to 1000 recently updated activities and approximately
 32 MiB of accounted event/preview data, evicting the oldest cached activity.
-Each body's preview retains at most 256 KiB; oversized non-chunk events remain
+Each body's preview retains at most 4 MiB; oversized non-chunk events remain
 on disk with a placeholder in the inspector. These are cache limits, NOT capture
 truncation limits. Total process memory can exceed the accounting budget due to
 JSON objects, grid controls, strings, queues and OS buffers. Evicted activities
@@ -226,7 +306,7 @@ dotnet run -c Release --no-build -- --ui-self-test
 dotnet run -c Release --no-build -- --help
 ```
 
-`--self-test` checks options, redaction, body streaming/cancellation, native-import
+`--self-test` checks options, full header/URL capture, body streaming/cancellation, native-import
 absence, journal persistence and export. `--ui-self-test` uses synthetic events
 to check filtering, missing metadata, inspectors, cache eviction and full export.
 It briefly opens a window and writes two viewport screenshots beside the built
@@ -247,9 +327,9 @@ dotnet run -- --diagnose
 This reports OS version, process architecture, enabled administrator and
 Performance Log Users roles, and API type availability without starting ETW.
 An enabled role does not prove access to every provider or target process.
-A disabled administrator role can mean a standard account or a UAC-filtered
-token. Different terminals can have different tokens. This command never
-elevates or changes policy. If roles are sufficient but Start still fails,
+A disabled administrator role can indicate that the executable manifest was
+bypassed, for example by directly running the DLL. Normal executable launches
+request elevation but do not change security policy. If the role is enabled but Start still fails,
 the exact denied operation needs tracing; the HRESULT alone does not identify it.
 
 To distinguish API startup failures from target-specific issues, test the
@@ -288,7 +368,8 @@ Detection includes `iexplore.exe` and `msedge.exe` processes with a loaded
 `mshtml.dll`. IE candidates may be broker or content processes; this is not
 tab identification or proof that a candidate issues requests. Access restrictions,
 process exits or cross-bitness module inspection can make enumeration incomplete.
-No elevation or page-content inspection is performed. Run enumeration again if
+The application is already elevated before enumeration; no page-content inspection
+is performed. Run enumeration again if
 the page navigates to a new process. Other MSHTML hosts are not auto-selected.
 
 Open the test site in Edge IE mode. Determine the PID that actually issues its
@@ -324,12 +405,12 @@ duration/size limit, use `dotnet run -- 1234 --continuous`.
 
 - Keep required enterprise security controls enabled. Compatibility with proxies,
   TLS inspection and endpoint security software must be validated in your environment.
-- Common sensitive headers are redacted and URL user info/query/fragment are omitted.
-  This is NOT comprehensive anonymization: paths, custom headers and captured
-  bodies can contain credentials or personal/business data. Only use approved
-  test traffic, protect exports and follow your retention policy.
-- Access denied requires administrator review of ETW/process/provider permissions.
-  The demo never automatically requests elevation or changes group membership.
+- URLs, headers and captured bodies are not redacted. Cookies, authorization
+  values, query strings, credentials and personal/business data may be written
+  to journals and exports. Only use approved test traffic, protect exports and
+  follow your retention policy.
+- Access denied after elevation requires administrator review of
+  ETW/process/provider permissions. The demo does not change group membership.
 - A successful Start call does not prove event delivery or complete PID filtering.
   Validate against known server-side GET/POST records. No automatic reattachment,
   historical backfill, cross-process correlation or non-WinINet coverage is promised.

@@ -152,7 +152,7 @@ internal static class Program
         {
             Console.Error.WriteLine($"Failed: {error.GetType().Name}, HRESULT=0x{error.HResult:X8}: {error.Message}");
             if (error.HResult == unchecked((int)0x80070005))
-                Console.Error.WriteLine("Access denied. Run --diagnose in this same terminal to check the effective token and API availability. This demo does not elevate or change policy.");
+                Console.Error.WriteLine("Access denied despite the requested administrator token. Run --diagnose to check the effective token and API availability.");
             return 1;
         }
     }
@@ -175,7 +175,21 @@ internal static class Program
         name.Equals("iexplore", StringComparison.OrdinalIgnoreCase)
         || name.Equals("msedge", StringComparison.OrdinalIgnoreCase);
 
-    private static List<IeCandidate> FindIeProcesses()
+    internal static List<IeCandidate> FindIeExecutableProcesses()
+    {
+        var candidates = new List<IeCandidate>();
+        foreach (var process in System.Diagnostics.Process.GetProcessesByName("iexplore"))
+        {
+            using (process)
+            {
+                try { candidates.Add(new IeCandidate((uint)process.Id, "iexplore", "New IE executable detected before module inspection")); }
+                catch (InvalidOperationException) { }
+            }
+        }
+        return candidates;
+    }
+
+    internal static List<IeCandidate> FindIeProcesses(bool reportSkipped = true)
     {
         var candidates = new List<IeCandidate>();
         var skipped = 0;
@@ -204,8 +218,8 @@ internal static class Program
                 }
             }
         }
-        if (skipped != 0)
-            Console.Error.WriteLine($"Skipped {skipped} inaccessible/exited process inspections. Enumeration may be incomplete; no elevation was attempted.");
+        if (reportSkipped && skipped != 0)
+            Console.Error.WriteLine($"Skipped {skipped} inaccessible/exited process inspections. Enumeration may be incomplete despite the administrator token.");
         return candidates.OrderBy(candidate => candidate.ProcessId).ToList();
     }
 
@@ -267,23 +281,23 @@ internal static class Program
         {
             ReadBody(eventArgs.ActivityId, "request", eventArgs.Message.Content);
             Write(new { kind = "request", eventArgs.ActivityId, eventArgs.Timestamp,
-                method = eventArgs.Message.Method.Method, url = SafeUrl(eventArgs.Message.RequestUri),
-                headers = SafeHeaders(eventArgs.Message.Headers),
-                contentHeaders = SafeHeaders(eventArgs.Message.Content?.Headers) });
+                method = eventArgs.Message.Method.Method, url = CaptureUrl(eventArgs.Message.RequestUri),
+                headers = CaptureHeaders(eventArgs.Message.Headers),
+                contentHeaders = CaptureHeaders(eventArgs.Message.Content?.Headers) });
         });
         provider.ResponseReceived += (_, eventArgs) => OnEvent(() =>
         {
             ReadBody(eventArgs.ActivityId, "response", eventArgs.Message.Content);
             Write(new { kind = "response", eventArgs.ActivityId, eventArgs.Timestamp,
                 status = (int)eventArgs.Message.StatusCode,
-                headers = SafeHeaders(eventArgs.Message.Headers),
-                contentHeaders = SafeHeaders(eventArgs.Message.Content?.Headers) });
+                headers = CaptureHeaders(eventArgs.Message.Headers),
+                contentHeaders = CaptureHeaders(eventArgs.Message.Content?.Headers) });
         });
         provider.RequestResponseCompleted += (_, eventArgs) => OnEvent(() =>
         {
             var timing = eventArgs.Timestamps;
             Write(new { kind = "completed", eventArgs.ActivityId,
-                url = SafeUrl(eventArgs.RequestedUri), eventArgs.ProcessId,
+                url = CaptureUrl(eventArgs.RequestedUri), eventArgs.ProcessId,
                 timing.CacheCheckedTimestamp, timing.ConnectionInitiatedTimestamp,
                 timing.NameResolvedTimestamp, timing.SslNegotiatedTimestamp,
                 timing.ConnectionCompletedTimestamp, timing.RequestSentTimestamp,
@@ -360,27 +374,13 @@ internal static class Program
         finally { readers.Release(); }
     }
 
-    private static string SafeUrl(Uri? uri)
-    {
-        if (uri is null) return "";
-        var safe = new UriBuilder(uri) { UserName = "", Password = "", Query = "", Fragment = "" };
-        return safe.Uri.GetLeftPart(UriPartial.Path);
-    }
+    private static string CaptureUrl(Uri? uri) => uri?.AbsoluteUri ?? "";
 
-    private static Dictionary<string, string> SafeHeaders(IEnumerable<KeyValuePair<string, string>>? headers)
+    private static Dictionary<string, string> CaptureHeaders(IEnumerable<KeyValuePair<string, string>>? headers)
     {
         var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         if (headers is null) return result;
-        foreach (var header in headers.Take(32))
-        {
-            var sensitive = header.Key.Contains("cookie", StringComparison.OrdinalIgnoreCase)
-                || header.Key.Contains("authorization", StringComparison.OrdinalIgnoreCase)
-                || header.Key.Contains("token", StringComparison.OrdinalIgnoreCase)
-                || header.Key.Contains("key", StringComparison.OrdinalIgnoreCase)
-                || header.Key.Equals("Location", StringComparison.OrdinalIgnoreCase)
-                || header.Key.Equals("Referer", StringComparison.OrdinalIgnoreCase);
-            result[header.Key] = sensitive ? "[redacted]" : header.Value[..Math.Min(header.Value.Length, 512)];
-        }
+        foreach (var header in headers) result[header.Key] = header.Value;
         return result;
     }
 
@@ -461,17 +461,18 @@ internal static class Program
             catch (ArgumentException) { continue; }
             throw new Exception("Invalid options accepted.");
         }
-        var headers = SafeHeaders(new Dictionary<string, string> { ["Cookie"] = "secret", ["X-Token"] = "secret", ["Content-Type"] = "text/plain" });
-        if (headers["Cookie"] != "[redacted]" || headers["X-Token"] != "[redacted]" || headers["Content-Type"] != "text/plain")
-            throw new Exception("Redaction test failed.");
-        if (SafeUrl(new Uri("https://user:secret@example.test/path?token=secret#fragment")) != "https://example.test/path")
+        var longHeader = new string('x', 1024);
+        var headers = CaptureHeaders(new Dictionary<string, string> { ["Cookie"] = "session=secret", ["Authorization"] = "Bearer secret", ["X-Long"] = longHeader });
+        if (headers["Cookie"] != "session=secret" || headers["Authorization"] != "Bearer secret" || headers["X-Long"] != longHeader)
+            throw new Exception("Full header capture test failed.");
+        if (CaptureUrl(new Uri("https://user:secret@example.test/path?token=secret#fragment")) != "https://user:secret@example.test/path?token=secret#fragment")
             throw new Exception("URL test failed.");
         if (JsonSerializer.Serialize(new { ActivityId = "test" }, JsonOptions) != "{\"activityId\":\"test\"}")
             throw new Exception("JSON field naming test failed.");
-        Console.WriteLine("PASS: candidate filter, options, bounds, header redaction, URL query removal. No capture was started.");
+        Console.WriteLine("PASS: candidate filter, options, bounds, full headers and URL capture. No capture was started.");
     }
 
-    private sealed record IeCandidate(uint ProcessId, string Name, string Reason);
+    internal sealed record IeCandidate(uint ProcessId, string Name, string Reason);
     private static async Task<(long Bytes, long Chunks)> StreamBody(Stream input, CancellationToken cancellation, Action<long, ReadOnlyMemory<byte>> emit)
     {
         var buffer = new byte[32768];

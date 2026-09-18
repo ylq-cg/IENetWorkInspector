@@ -1,17 +1,23 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Net;
 using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
+using System.Xml.Linq;
+using Microsoft.Web.WebView2.Core;
+using Microsoft.Web.WebView2.WinForms;
 
 internal sealed class CaptureForm : Form
 {
     private readonly ComboBox processes = new() { Width = 270, DropDownStyle = ComboBoxStyle.DropDown };
     private readonly Button refresh = new() { Text = "Refresh", AutoSize = true };
     private readonly Button start = new() { Text = "Start", AutoSize = true };
+    private readonly Button autoCapture = new() { Text = "Auto Capture", AutoSize = true };
     private readonly Button stop = new() { Text = "Stop", AutoSize = true, Enabled = false };
     private readonly Button clear = new() { Text = "Clear", AutoSize = true };
+    private readonly Button clearIeCache = new() { Text = "Clear IE Cache", AutoSize = true };
     private readonly Button export = new() { Text = "Export JSONL", AutoSize = true, Enabled = false };
     private readonly Label state = new() { Text = "Ready", AutoSize = true, ForeColor = Color.FromArgb(23, 97, 68) };
     private readonly Label counter = new() { Text = "0 sessions / 0 events", AutoSize = true };
@@ -26,8 +32,26 @@ internal sealed class CaptureForm : Form
     private readonly TextBox body = DetailBox();
     private readonly TextBox responseHeaders = DetailBox();
     private readonly TextBox responseBody = DetailBox();
+    private readonly TextBox requestSyntax = DetailBox();
+    private readonly TextBox responseSyntax = DetailBox();
+    private readonly PictureBox requestImage = ImageBox();
+    private readonly PictureBox responseImage = ImageBox();
+    private readonly Label requestImageState = MediaState();
+    private readonly Label responseImageState = MediaState();
+    private readonly TextBox requestHex = DetailBox();
+    private readonly TextBox responseHex = DetailBox();
+    private readonly WebView2 requestWeb = WebView();
+    private readonly WebView2 responseWeb = WebView();
+    private readonly Label requestWebState = MediaState("Initializing WebView...");
+    private readonly Label responseWebState = MediaState("Initializing WebView...");
+    private readonly TextBox requestAuth = DetailBox();
+    private readonly TextBox responseAuth = DetailBox();
+    private readonly TextBox requestCookies = DetailBox();
+    private readonly TextBox responseCookies = DetailBox();
     private readonly TextBox requestRaw = DetailBox();
     private readonly TextBox responseRaw = DetailBox();
+    private readonly TextBox requestJson = DetailBox();
+    private readonly TextBox responseJson = DetailBox();
     private readonly TextBox filter = new() { Width = 230, PlaceholderText = "Filter URL / host / method / status" };
     private readonly ComboBox statusFilter = new() { Width = 105, DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly Label selection = new() { AutoSize = true, Text = "No session selected", Dock = DockStyle.Top, Padding = new Padding(8), AutoEllipsis = true, MaximumSize = new Size(0, 62) };
@@ -37,6 +61,7 @@ internal sealed class CaptureForm : Form
     private readonly Dictionary<string, RequestEntry> requests = new();
     private CaptureJournal? journal;
     private readonly string journalDirectory;
+    private readonly string webViewDataDirectory;
     private readonly LinkedList<string> cacheOrder = new();
     private long cachedBytes;
     private long nextRowNumber;
@@ -44,6 +69,7 @@ internal sealed class CaptureForm : Form
     private const long CacheBudget = 32 * 1024 * 1024;
     private const int MaxCachedRequests = 1000;
     private const int MaxCachedEventChars = 256 * 1024;
+    private const int MaxBodyPreviewBytes = 4 * 1024 * 1024;
     private readonly JsonSerializerOptions pretty = new() { WriteIndented = true };
     private readonly System.Windows.Forms.Timer timer = new() { Interval = 100 };
     private readonly ToolTip tips = new();
@@ -52,6 +78,9 @@ internal sealed class CaptureForm : Form
     private bool stopping;
     private bool closePending;
     private bool refreshing;
+    private bool clearingIeCache;
+    private bool watchingForProcess;
+    private CancellationTokenSource? processWatchCancellation;
     private RequestEntry? shownEntry;
     private int shownRevision = -1;
     private DateTime captureStart;
@@ -60,86 +89,197 @@ internal sealed class CaptureForm : Form
     {
         journalDirectory = testMode ? Path.Combine(Path.GetTempPath(), "IeNetworkDemo-ui-test-" + Guid.NewGuid().ToString("N"))
             : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "IeNetworkDemo", "Captures");
-        Text = "IE Network Inspector - Experimental";
+        webViewDataDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "IeNetworkDemo", "WebView2");
+        Text = "IE Network Inspector";
         Font = new Font("Tahoma", 9F);
         ClientSize = new Size(1380, 860);
-        MinimumSize = new Size(880, 640);
+        MinimumSize = new Size(960, 640);
         StartPosition = FormStartPosition.CenterScreen;
-        BackColor = Color.White;
+        BackColor = Color.FromArgb(240, 243, 247);
         AutoScaleMode = AutoScaleMode.Dpi;
-        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, Padding = new Padding(6) };
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4, Margin = Padding.Empty, Padding = Padding.Empty };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+        var menu = new MenuStrip { Dock = DockStyle.Fill, GripStyle = ToolStripGripStyle.Hidden, BackColor = Color.White };
+        var fileMenu = new ToolStripMenuItem("&File");
+        var exportMenuItem = new ToolStripMenuItem("Export JSONL...");
+        exportMenuItem.Click += (_, _) => Export();
+        var exitMenuItem = new ToolStripMenuItem("Exit");
+        exitMenuItem.Click += (_, _) => Close();
+        fileMenu.DropDownItems.AddRange(new ToolStripItem[] { exportMenuItem, new ToolStripSeparator(), exitMenuItem });
+        fileMenu.DropDownOpening += (_, _) => exportMenuItem.Enabled = export.Enabled;
+        var captureMenu = new ToolStripMenuItem("&Capture");
+        var refreshMenuItem = new ToolStripMenuItem("Refresh Processes");
+        refreshMenuItem.Click += async (_, _) => await RefreshProcesses();
+        var startMenuItem = new ToolStripMenuItem("Start Capture");
+        startMenuItem.Click += async (_, _) => await StartCapture();
+        var autoCaptureMenuItem = new ToolStripMenuItem("Auto Capture New IE Process");
+        autoCaptureMenuItem.Click += async (_, _) => await ToggleProcessWatch();
+        var stopMenuItem = new ToolStripMenuItem("Stop Capture");
+        stopMenuItem.Click += (_, _) => StopCapture();
+        var clearMenuItem = new ToolStripMenuItem("Clear Sessions");
+        clearMenuItem.Click += (_, _) => ClearCapture();
+        var clearIeCacheMenuItem = new ToolStripMenuItem("Clear IE Cache...");
+        clearIeCacheMenuItem.Click += async (_, _) => await ClearInternetCache();
+        captureMenu.DropDownItems.AddRange(new ToolStripItem[] { refreshMenuItem, startMenuItem, autoCaptureMenuItem, stopMenuItem, new ToolStripSeparator(), clearMenuItem, clearIeCacheMenuItem });
+        captureMenu.DropDownOpening += (_, _) =>
+        {
+            refreshMenuItem.Enabled = refresh.Enabled;
+            startMenuItem.Enabled = start.Enabled;
+            autoCaptureMenuItem.Enabled = autoCapture.Enabled;
+            stopMenuItem.Enabled = stop.Enabled;
+            clearMenuItem.Enabled = clear.Enabled;
+            clearIeCacheMenuItem.Enabled = clearIeCache.Enabled;
+        };
+        var viewMenu = new ToolStripMenuItem("&View");
+        var statisticsMenuItem = new ToolStripMenuItem("Statistics");
+        statisticsMenuItem.Click += (_, _) => detailTabs.SelectedIndex = 0;
+        var inspectorsMenuItem = new ToolStripMenuItem("Inspectors");
+        inspectorsMenuItem.Click += (_, _) => detailTabs.SelectedIndex = 1;
+        var logMenuItem = new ToolStripMenuItem("Log");
+        logMenuItem.Click += (_, _) => detailTabs.SelectedIndex = 2;
+        var extendedColumnsMenuItem = new ToolStripMenuItem("Extended Session Columns") { CheckOnClick = true };
+        extendedColumnsMenuItem.CheckedChanged += (_, _) =>
+        {
+            foreach (var name in new[] { "duration", "type", "time" })
+                if (grid.Columns[name] is { } column) column.Visible = extendedColumnsMenuItem.Checked;
+        };
+        viewMenu.DropDownItems.AddRange(new ToolStripItem[] { statisticsMenuItem, inspectorsMenuItem, logMenuItem, new ToolStripSeparator(), extendedColumnsMenuItem });
+        var helpMenu = new ToolStripMenuItem("&Help");
+        var aboutMenuItem = new ToolStripMenuItem("About IE Network Inspector");
+        aboutMenuItem.Click += (_, _) => MessageBox.Show(this, "IE Network Inspector\r\nHTTP diagnostics for approved IE-mode traffic.", "About", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        helpMenu.DropDownItems.Add(aboutMenuItem);
+        menu.Items.AddRange(new ToolStripItem[] { fileMenu, captureMenu, viewMenu, helpMenu });
+        MainMenuStrip = menu;
+        layout.Controls.Add(menu, 0, 0);
+
         var targetBar = Bar();
+        targetBar.Margin = Padding.Empty;
+        targetBar.Padding = new Padding(8, 5, 8, 5);
+        targetBar.BackColor = Color.FromArgb(248, 249, 251);
+        start.Text = "Start Capture";
+        StyleCommandButton(start, Color.FromArgb(24, 115, 64));
+        StyleCommandButton(autoCapture, Color.FromArgb(24, 86, 140));
+        StyleCommandButton(stop, Color.FromArgb(155, 48, 48));
+        StyleCommandButton(refresh);
+        StyleCommandButton(clear);
+        StyleCommandButton(clearIeCache);
+        StyleCommandButton(export);
+        targetBar.Controls.Add(start);
+        targetBar.Controls.Add(autoCapture);
+        targetBar.Controls.Add(stop);
+        targetBar.Controls.Add(Separator());
         targetBar.Controls.Add(Caption("Process / PID"));
         targetBar.Controls.Add(processes);
         targetBar.Controls.Add(refresh);
-        targetBar.Controls.Add(start);
-        targetBar.Controls.Add(stop);
+        targetBar.Controls.Add(Separator());
         targetBar.Controls.Add(clear);
+        targetBar.Controls.Add(clearIeCache);
         targetBar.Controls.Add(export);
-        layout.Controls.Add(targetBar, 0, 0);
-        var split = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Vertical, SplitterWidth = 7, Size = new Size(1200, 600), Panel1MinSize = 300, Panel2MinSize = 320 };
+        layout.Controls.Add(targetBar, 0, 1);
+
+        var split = new SplitContainer
+        {
+            Dock = DockStyle.Fill, Orientation = Orientation.Vertical, SplitterWidth = 5,
+            BorderStyle = BorderStyle.FixedSingle, BackColor = Color.FromArgb(140, 157, 177),
+            Size = new Size(1200, 600), Panel1MinSize = 320, Panel2MinSize = 420
+        };
         var sessionLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, Margin = Padding.Empty };
         sessionLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        sessionLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         sessionLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        var filters = Bar();
+        sessionLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        var filters = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 4, Margin = Padding.Empty, Padding = new Padding(4), BackColor = Color.FromArgb(52, 67, 83) };
+        filters.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        filters.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        filters.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        filters.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         statusFilter.Items.AddRange(new object[] { "All statuses", "2xx", "3xx", "4xx / 5xx", "No response" });
         statusFilter.SelectedIndex = 0;
-        var resetFilter = new Button { Text = "Reset filters", AutoSize = true };
+        filter.Dock = DockStyle.Fill;
+        filter.Margin = new Padding(4, 1, 5, 1);
+        filter.PlaceholderText = "Filter sessions by URL, host, method, or status";
+        statusFilter.Margin = new Padding(0, 1, 5, 1);
+        var resetFilter = new Button { Text = "Reset", AutoSize = true, Margin = Padding.Empty };
+        StyleCommandButton(resetFilter);
         resetFilter.Click += (_, _) => { filter.Clear(); statusFilter.SelectedIndex = 0; };
-        filters.Controls.Add(filter);
-        filters.Controls.Add(statusFilter);
-        filters.Controls.Add(resetFilter);
-        sessionLayout.Controls.Add(filters, 0, 0);
-        sessionLayout.Controls.Add(grid, 0, 1);
+        filters.Controls.Add(new Label { Text = "Quick filter", AutoSize = true, ForeColor = Color.White, Margin = new Padding(3, 6, 3, 0) }, 0, 0);
+        filters.Controls.Add(filter, 1, 0);
+        filters.Controls.Add(statusFilter, 2, 0);
+        filters.Controls.Add(resetFilter, 3, 0);
+        sessionLayout.Controls.Add(grid, 0, 0);
+        sessionLayout.Controls.Add(filters, 0, 1);
         split.Panel1.Controls.Add(sessionLayout);
-        var inspectors = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal, Size = new Size(500, 600), Panel1MinSize = 130, Panel2MinSize = 130, SplitterWidth = 6 };
-        inspectors.Panel1.Controls.Add(Inspector("Request", headers, body, requestRaw));
-        inspectors.Panel2.Controls.Add(Inspector("Response", responseHeaders, responseBody, responseRaw));
+
+        var inspectors = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal, Size = new Size(500, 600), Panel1MinSize = 150, Panel2MinSize = 150, SplitterWidth = 5, BackColor = Color.FromArgb(140, 157, 177) };
+        inspectors.Panel1.BackColor = Color.FromArgb(245, 247, 250);
+        inspectors.Panel2.BackColor = Color.FromArgb(245, 247, 250);
+        inspectors.Panel1.Controls.Add(Inspector("Request Inspector", headers, body, requestSyntax,
+            ImageViewer(requestImage, requestImageState), requestHex, WebViewer(requestWeb, requestWebState), requestAuth, requestCookies, requestRaw, requestJson));
+        inspectors.Panel2.Controls.Add(Inspector("Response Inspector", responseHeaders, responseBody, responseSyntax,
+            ImageViewer(responseImage, responseImageState), responseHex, WebViewer(responseWeb, responseWebState), responseAuth, responseCookies, responseRaw, responseJson));
         var inspectLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2 };
         inspectLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         inspectLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         inspectLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        selection.BackColor = Color.FromArgb(220, 228, 237);
+        selection.ForeColor = Color.FromArgb(28, 42, 58);
+        selection.Font = new Font("Tahoma", 9F, FontStyle.Bold);
         inspectLayout.Controls.Add(selection, 0, 0);
         inspectLayout.Controls.Add(inspectors, 0, 1);
+        AddTab(detailTabs, "Statistics", timing);
         AddTab(detailTabs, "Inspectors", inspectLayout);
-        AddTab(detailTabs, "Timing", timing);
         AddTab(detailTabs, "Log", log);
+        detailTabs.SelectedIndex = 1;
         split.Panel2.Controls.Add(detailTabs);
-        layout.Controls.Add(split, 0, 1);
-        var statusBar = Bar();
-        statusBar.Controls.Add(state);
-        statusBar.Controls.Add(counter);
-        layout.Controls.Add(statusBar, 0, 2);
+        layout.Controls.Add(split, 0, 2);
+
+        var statusBar = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 2, Margin = Padding.Empty, Padding = new Padding(7, 4, 7, 4), BackColor = Color.FromArgb(232, 237, 243) };
+        statusBar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        statusBar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        state.AutoSize = false;
+        state.AutoEllipsis = true;
+        state.Dock = DockStyle.Fill;
+        state.TextAlign = ContentAlignment.MiddleLeft;
+        state.MinimumSize = new Size(80, 24);
+        counter.Margin = new Padding(8, 4, 0, 0);
+        statusBar.Controls.Add(state, 0, 0);
+        statusBar.Controls.Add(counter, 1, 0);
+        layout.Controls.Add(statusBar, 0, 3);
         Controls.Add(layout);
-        AddColumn("number", "#", 42);
-        AddColumn("status", "Result", 62);
-        AddColumn("method", "Method", 68);
-        AddColumn("host", "Host", 145);
+        AddColumn("number", "#", 38);
+        AddColumn("status", "Result", 58);
+        AddColumn("method", "Method", 64);
+        AddColumn("protocol", "Protocol", 68);
+        AddColumn("host", "Host", 150);
         AddColumn("url", "URL", 240, true);
-        AddColumn("duration", "Time ms", 85);
-        AddColumn("type", "Content-Type", 135);
-        AddColumn("time", "Started", 100);
-        grid.RowTemplate.Height = 25;
+        AddColumn("duration", "Time ms", 78, visible: false);
+        AddColumn("type", "Content-Type", 125, visible: false);
+        AddColumn("time", "Started", 98, visible: false);
+        grid.RowTemplate.Height = 23;
         grid.EnableHeadersVisualStyles = false;
-        grid.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(236, 240, 244);
-        grid.ColumnHeadersHeight = 30;
+        grid.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(230, 235, 241);
+        grid.ColumnHeadersDefaultCellStyle.ForeColor = Color.FromArgb(35, 48, 62);
+        grid.ColumnHeadersDefaultCellStyle.Font = new Font("Tahoma", 8.5F);
+        grid.ColumnHeadersHeight = 27;
         grid.CellBorderStyle = DataGridViewCellBorderStyle.SingleHorizontal;
-        grid.GridColor = Color.FromArgb(233, 236, 239);
-        grid.AlternatingRowsDefaultCellStyle.BackColor = Color.FromArgb(245, 248, 245);
-        grid.DefaultCellStyle.SelectionBackColor = Color.FromArgb(218, 235, 223);
-        grid.DefaultCellStyle.SelectionForeColor = Color.Black;
+        grid.GridColor = Color.FromArgb(224, 229, 235);
+        grid.AlternatingRowsDefaultCellStyle.BackColor = Color.FromArgb(247, 249, 251);
+        grid.DefaultCellStyle.SelectionBackColor = Color.FromArgb(207, 225, 246);
+        grid.DefaultCellStyle.SelectionForeColor = Color.FromArgb(20, 48, 82);
         tips.SetToolTip(processes, "Select an IE candidate or enter the request process PID. Candidates do not identify tabs.");
         tips.SetToolTip(start, "Capture bodies until stopped. Events are saved locally. Use approved test traffic only.");
+        tips.SetToolTip(autoCapture, "Wait for a new IE-mode process, then attach and start capture automatically.");
         tips.SetToolTip(export, "Export all persisted events. Paths, custom headers and bodies may still contain sensitive data.");
         refresh.Click += async (_, _) => await RefreshProcesses();
         start.Click += async (_, _) => await StartCapture();
+        autoCapture.Click += async (_, _) => await ToggleProcessWatch();
         stop.Click += (_, _) => StopCapture();
         clear.Click += (_, _) => ClearCapture();
+        clearIeCache.Click += async (_, _) => await ClearInternetCache();
         export.Click += (_, _) => Export();
         grid.SelectionChanged += (_, _) => ShowDetails();
         filter.TextChanged += (_, _) => ApplyFilters();
@@ -147,12 +287,17 @@ internal sealed class CaptureForm : Form
         timer.Tick += (_, _) => DrainMessages();
         Shown += async (_, _) =>
         {
-            split.SplitterDistance = (int)(split.Width * 0.54);
+            split.SplitterDistance = (int)(split.Width * 0.44);
             inspectors.SplitterDistance = inspectors.Height / 2;
-            if (!testMode) await RefreshProcesses();
+            if (!testMode)
+            {
+                _ = InitializeWebViews();
+                await RefreshProcesses();
+            }
         };
         FormClosing += (_, eventArgs) =>
         {
+            processWatchCancellation?.Cancel();
             if (worker is not null)
             {
                 eventArgs.Cancel = true;
@@ -167,39 +312,149 @@ internal sealed class CaptureForm : Form
         };
         FormClosed += (_, _) =>
         {
+            processWatchCancellation?.Dispose();
+            ClearImage(requestImage, requestImageState);
+            ClearImage(responseImage, responseImageState);
             timer.Dispose(); tips.Dispose(); journal?.Dispose();
             if (testMode && Directory.Exists(journalDirectory)) Directory.Delete(journalDirectory, true);
         };
     }
 
-    private static TextBox DetailBox() => new() { Dock = DockStyle.Fill, Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Both, WordWrap = false, BorderStyle = BorderStyle.None, BackColor = Color.White, Font = new Font("Consolas", 10F) };
+    private static TextBox DetailBox() => new() { Dock = DockStyle.Fill, Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Both, WordWrap = false, BorderStyle = BorderStyle.FixedSingle, BackColor = Color.White, Font = new Font("Consolas", 9.5F) };
+    private static PictureBox ImageBox() => new() { Dock = DockStyle.Fill, BackColor = Color.White, SizeMode = PictureBoxSizeMode.Zoom };
+    private static Label MediaState(string text = "No image selected.") => new() { Dock = DockStyle.Fill, Text = text, TextAlign = ContentAlignment.MiddleCenter, AutoEllipsis = true, Padding = new Padding(12), ForeColor = Color.FromArgb(75, 87, 100), BackColor = Color.White };
+    private static WebView2 WebView() => new() { Dock = DockStyle.Fill, DefaultBackgroundColor = Color.White };
     private static FlowLayoutPanel Bar() => new() { Dock = DockStyle.Fill, AutoSize = true, WrapContents = true, Margin = new Padding(0, 0, 0, 4), BackColor = Color.FromArgb(246, 248, 250), Padding = new Padding(3) };
-    private static Control Inspector(string title, TextBox headerBox, TextBox bodyBox, TextBox rawBox)
+    private static Panel Separator() => new() { Width = 1, Height = 24, BackColor = Color.FromArgb(190, 198, 207), Margin = new Padding(7, 2, 7, 2) };
+    private static void StyleCommandButton(Button button, Color? foreground = null)
+    {
+        button.FlatStyle = FlatStyle.Flat;
+        button.FlatAppearance.BorderColor = Color.FromArgb(173, 182, 192);
+        button.BackColor = Color.White;
+        button.ForeColor = foreground ?? Color.FromArgb(35, 47, 60);
+        button.Padding = new Padding(4, 1, 4, 1);
+        button.Margin = new Padding(2);
+    }
+    private static Control Inspector(string title, TextBox headerBox, TextBox bodyBox, TextBox syntaxBox,
+        Control imageView, TextBox hexBox, Control webView, TextBox authBox, TextBox cookiesBox, TextBox rawBox, TextBox jsonBox)
     {
         var panel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2 };
         panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
         panel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        panel.Controls.Add(new Label { Text = title, AutoSize = true, Font = new Font("Tahoma", 10F, FontStyle.Bold), Padding = new Padding(5) }, 0, 0);
-        var tabs = new TabControl { Dock = DockStyle.Fill };
+        panel.Controls.Add(new Label { Text = title, AutoSize = false, Dock = DockStyle.Fill, Font = new Font("Tahoma", 9F, FontStyle.Bold), ForeColor = Color.FromArgb(42, 56, 72), BackColor = Color.FromArgb(218, 226, 235), Padding = new Padding(7, 0, 5, 0), TextAlign = ContentAlignment.MiddleLeft }, 0, 0);
+        var tabs = new TabControl { Dock = DockStyle.Fill, Multiline = true, Font = new Font("Tahoma", 8F) };
         AddTab(tabs, "Headers", headerBox);
-        AddTab(tabs, "Body", bodyBox);
-        AddTab(tabs, "JSON", rawBox);
+        AddTab(tabs, "TextView", bodyBox);
+        AddTab(tabs, "SyntaxView", syntaxBox);
+        AddTab(tabs, "ImageView", imageView);
+        AddTab(tabs, "HexView", hexBox);
+        AddTab(tabs, "WebView", webView);
+        AddTab(tabs, "Auth", authBox);
+        AddTab(tabs, "Cookies", cookiesBox);
+        AddTab(tabs, "Raw", rawBox);
+        AddTab(tabs, "JSON", jsonBox);
         panel.Controls.Add(tabs, 0, 1);
         return panel;
     }
-    private static Label Caption(string text) => new() { Text = text, AutoSize = true, Margin = new Padding(3, 7, 8, 3) };
+    private static Control ImageViewer(PictureBox image, Label state)
+    {
+        var panel = new Panel { Dock = DockStyle.Fill, BackColor = Color.White };
+        panel.Controls.Add(image);
+        panel.Controls.Add(state);
+        return panel;
+    }
+    private static Control WebViewer(WebView2 webView, Label state)
+    {
+        var panel = new Panel { Dock = DockStyle.Fill, BackColor = Color.White };
+        panel.Controls.Add(webView);
+        panel.Controls.Add(state);
+        return panel;
+    }
+    private async Task<bool> InitializeWebViews()
+    {
+        CoreWebView2Environment environment;
+        try { environment = await CoreWebView2Environment.CreateAsync(userDataFolder: webViewDataDirectory).ConfigureAwait(false); }
+        catch (Exception error)
+        {
+            await RunOnUiThread(() =>
+            {
+                requestWeb.Enabled = responseWeb.Enabled = false;
+                requestWebState.Text = responseWebState.Text = "WebView2 Runtime could not be initialized. See Log for details.";
+                requestWebState.Visible = responseWebState.Visible = true;
+                AppendLog($"WebView environment failed: 0x{error.HResult:X8}: {error.Message}");
+                return Task.FromResult(false);
+            }).ConfigureAwait(false);
+            return false;
+        }
+        return await RunOnUiThread(async () =>
+        {
+            var initialized = true;
+            foreach (var (webView, webState) in new[] { (requestWeb, requestWebState), (responseWeb, responseWebState) })
+            {
+                try
+                {
+                    await webView.EnsureCoreWebView2Async(environment);
+                    var core = webView.CoreWebView2;
+                    core.Settings.IsScriptEnabled = false;
+                    core.Settings.AreDevToolsEnabled = false;
+                    core.Settings.AreDefaultScriptDialogsEnabled = false;
+                    core.Settings.AreHostObjectsAllowed = false;
+                    core.Settings.IsWebMessageEnabled = false;
+                    core.AddWebResourceRequestedFilter("*", CoreWebView2WebResourceContext.All);
+                    core.WebResourceRequested += (_, eventArgs) =>
+                    {
+                        var uri = eventArgs.Request.Uri;
+                        if (uri.StartsWith("data:", StringComparison.OrdinalIgnoreCase)
+                            || uri.Equals("about:blank", StringComparison.OrdinalIgnoreCase)) return;
+                        eventArgs.Response = core.Environment.CreateWebResourceResponse(null, 403, "Blocked", "Content-Type: text/plain");
+                    };
+                    core.NavigationStarting += (_, eventArgs) =>
+                    {
+                        if (!eventArgs.Uri.Equals("about:blank", StringComparison.OrdinalIgnoreCase)
+                            && !eventArgs.Uri.StartsWith("data:text/html", StringComparison.OrdinalIgnoreCase)) eventArgs.Cancel = true;
+                    };
+                    webView.NavigationCompleted += (_, eventArgs) =>
+                    {
+                        webState.Text = eventArgs.IsSuccess ? "" : $"WebView navigation failed: {eventArgs.WebErrorStatus}";
+                        webState.Visible = !eventArgs.IsSuccess;
+                    };
+                    RenderWebView(webView, webState, webView.Tag as string ?? WebMessage("Select a session with a captured HTML body."));
+                }
+                catch (Exception error)
+                {
+                    initialized = false;
+                    webView.Enabled = false;
+                    webState.Text = "WebView2 could not be initialized. See Log for details.";
+                    webState.Visible = true;
+                    AppendLog($"WebView initialization failed: 0x{error.HResult:X8}: {error.Message}");
+                }
+            }
+            return initialized;
+        }).ConfigureAwait(false);
+    }
+    private Task<T> RunOnUiThread<T>(Func<Task<T>> action)
+    {
+        var completion = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
+        BeginInvoke(new Action(async () =>
+        {
+            try { completion.SetResult(await action()); }
+            catch (Exception error) { completion.SetException(error); }
+        }));
+        return completion.Task;
+    }
+    private static Label Caption(string text) => new() { Text = text, AutoSize = true, ForeColor = Color.FromArgb(48, 59, 70), Margin = new Padding(3, 7, 8, 3) };
     private static void AddTab(TabControl tabs, string text, Control content)
     {
-        var tab = new TabPage(text) { Padding = new Padding(10) };
+        var tab = new TabPage(text) { Padding = new Padding(5), BackColor = Color.FromArgb(245, 247, 250) };
         tab.Controls.Add(content);
         tabs.TabPages.Add(tab);
     }
-    private void AddColumn(string name, string title, int width, bool fill = false) => grid.Columns.Add(new DataGridViewTextBoxColumn
+    private void AddColumn(string name, string title, int width, bool fill = false, bool visible = true) => grid.Columns.Add(new DataGridViewTextBoxColumn
     {
-        Name = name, HeaderText = title, Width = width, MinimumWidth = fill ? 130 : Math.Min(width, 60),
-        AutoSizeMode = fill ? DataGridViewAutoSizeColumnMode.Fill : DataGridViewAutoSizeColumnMode.None,
-        SortMode = DataGridViewColumnSortMode.NotSortable
+        Name = name, HeaderText = title, Width = width, MinimumWidth = fill ? 130 : width,
+        AutoSizeMode = fill ? DataGridViewAutoSizeColumnMode.Fill : DataGridViewAutoSizeColumnMode.ColumnHeader,
+        SortMode = DataGridViewColumnSortMode.NotSortable, Visible = visible
     });
 
     private static ProcessStartInfo Command(params string[] args)
@@ -318,6 +573,129 @@ internal sealed class CaptureForm : Form
     private static ProcessStartInfo CaptureCommand(uint processId) =>
         Command("--worker", processId.ToString(CultureInfo.InvariantCulture), "--continuous");
 
+    private async Task ToggleProcessWatch()
+    {
+        if (watchingForProcess)
+        {
+            processWatchCancellation?.Cancel();
+            return;
+        }
+        if (worker is not null || refreshing || clearingIeCache) return;
+        using var cancellation = new CancellationTokenSource();
+        processWatchCancellation = cancellation;
+        var existing = Program.FindIeProcesses(false).Select(candidate => candidate.ProcessId).ToHashSet();
+        existing.UnionWith(Program.FindIeExecutableProcesses().Select(candidate => candidate.ProcessId));
+        SetWatchingForProcess(true);
+        state.ForeColor = Color.FromArgb(24, 86, 140);
+        state.Text = "Waiting for a new IE-mode process... Open the target page now.";
+        try
+        {
+            var candidate = await WaitForNewIeProcess(existing, cancellation.Token);
+            processes.Items.Clear();
+            processes.Items.Add($"{candidate.ProcessId} | {candidate.Name} | {candidate.Reason}");
+            processes.SelectedIndex = 0;
+            state.Text = $"Detected PID {candidate.ProcessId}; starting capture...";
+            SetWatchingForProcess(false);
+            await StartCapture();
+            return;
+        }
+        catch (OperationCanceledException)
+        {
+            state.ForeColor = Color.FromArgb(23, 97, 68);
+            state.Text = "Automatic process watch cancelled.";
+        }
+        catch (Exception error)
+        {
+            ReportError(error);
+        }
+        finally
+        {
+            if (ReferenceEquals(processWatchCancellation, cancellation)) processWatchCancellation = null;
+            if (worker is null) SetWatchingForProcess(false);
+        }
+    }
+
+    private static async Task<Program.IeCandidate> WaitForNewIeProcess(HashSet<uint> existing, CancellationToken cancellation)
+    {
+        var fallbackPoll = 0;
+        while (true)
+        {
+            await Task.Delay(20, cancellation).ConfigureAwait(false);
+            var candidate = Program.FindIeExecutableProcesses().FirstOrDefault(item => !existing.Contains(item.ProcessId));
+            if (candidate is not null) return candidate;
+            if (++fallbackPoll < 5) continue;
+            fallbackPoll = 0;
+            candidate = Program.FindIeProcesses(false).FirstOrDefault(item => !existing.Contains(item.ProcessId));
+            if (candidate is not null) return candidate;
+        }
+    }
+
+    private void SetWatchingForProcess(bool watching)
+    {
+        watchingForProcess = watching;
+        autoCapture.Text = watching ? "Cancel Auto" : "Auto Capture";
+        processes.Enabled = refresh.Enabled = start.Enabled = clear.Enabled = clearIeCache.Enabled = export.Enabled = !watching;
+        autoCapture.Enabled = worker is null;
+    }
+
+    private static ProcessStartInfo ClearInternetCacheCommand()
+    {
+        var info = new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "rundll32.exe"))
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        info.ArgumentList.Add("InetCpl.cpl,ClearMyTracksByProcess");
+        info.ArgumentList.Add("8");
+        return info;
+    }
+
+    private async Task ClearInternetCache()
+    {
+        if (worker is not null || refreshing || clearingIeCache || watchingForProcess) return;
+        var browserRunning = IsBrowserRunning();
+        var browserWarning = browserRunning
+            ? "Microsoft Edge or Internet Explorer is still running and may retain validators in memory. Close all browser windows and background processes for a reliable reset.\r\n\r\n"
+            : "";
+        if (MessageBox.Show(this,
+            browserWarning + "Clear temporary Internet files for the current Windows user now?\r\n\r\nCookies, saved passwords and browsing history are not selected.",
+            "Clear IE cache", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
+        clearingIeCache = true;
+        processes.Enabled = refresh.Enabled = start.Enabled = clear.Enabled = clearIeCache.Enabled = false;
+        state.ForeColor = Color.FromArgb(75, 87, 100);
+        state.Text = "Clearing IE cache...";
+        try
+        {
+            using var process = Process.Start(ClearInternetCacheCommand())
+                ?? throw new InvalidOperationException("Windows cache cleanup could not be started.");
+            await process.WaitForExitAsync();
+            if (process.ExitCode != 0) throw new InvalidOperationException($"Windows cache cleanup exited with code {process.ExitCode}.");
+            state.ForeColor = Color.FromArgb(23, 97, 68);
+            state.Text = browserRunning ? "Disk cache cleared. Fully exit and reopen Edge/IE before capturing." : "IE cache cleared. Reopen the browser, start capture, then hard-refresh.";
+            AppendLog("Windows Internet cache cleanup completed for the current user.");
+        }
+        catch (Exception error)
+        {
+            ReportError(error);
+        }
+        finally
+        {
+            clearingIeCache = false;
+            processes.Enabled = refresh.Enabled = start.Enabled = clear.Enabled = clearIeCache.Enabled = true;
+        }
+    }
+
+    private static bool IsBrowserRunning()
+    {
+        foreach (var name in new[] { "iexplore", "msedge" })
+        {
+            var running = Process.GetProcessesByName(name);
+            try { if (running.Length != 0) return true; }
+            finally { foreach (var process in running) process.Dispose(); }
+        }
+        return false;
+    }
+
     private void StopCapture()
     {
         if (worker is null || stopping) return;
@@ -403,7 +781,7 @@ internal sealed class CaptureForm : Form
             if (sequence != preview.NextSequence) preview.MissingChunks = true;
             preview.NextSequence = sequence + 1;
             preview.BytesSeen += chunk.Length;
-            var retained = Math.Min(chunk.Length, Math.Max(0, MaxCachedEventChars - (int)preview.Data.Length));
+            var retained = Math.Min(chunk.Length, Math.Max(0, MaxBodyPreviewBytes - (int)preview.Data.Length));
             preview.Data.Write(chunk, 0, retained);
             entry.CachedBytes += retained;
             cachedBytes += retained;
@@ -429,7 +807,10 @@ internal sealed class CaptureForm : Form
             entry.Row.Cells["method"].Value = record.GetProperty("method").GetString();
             entry.Row.Cells["url"].Value = record.GetProperty("url").GetString();
             if (Uri.TryCreate(record.GetProperty("url").GetString(), UriKind.Absolute, out var uri))
+            {
                 entry.Row.Cells["host"].Value = uri.Authority;
+                entry.Row.Cells["protocol"].Value = uri.Scheme.ToUpperInvariant();
+            }
             if (record.GetProperty("timestamp").TryGetDateTimeOffset(out var timestamp))
                 entry.Row.Cells["time"].Value = timestamp.ToLocalTime().ToString("HH:mm:ss.fff");
         }
@@ -527,7 +908,7 @@ internal sealed class CaptureForm : Form
     {
         if (grid.SelectedRows.Count == 0 || !grid.SelectedRows[0].Visible || grid.SelectedRows[0].Tag is not RequestEntry entry)
         {
-            headers.Clear(); responseHeaders.Clear(); body.Clear(); responseBody.Clear(); requestRaw.Clear(); responseRaw.Clear(); timing.Clear();
+            ClearInspectors();
             selection.Text = "No session selected"; shownEntry = null; shownRevision = -1;
             return;
         }
@@ -537,11 +918,36 @@ internal sealed class CaptureForm : Form
         selection.Text = $"#{entry.Row.Cells["number"].Value}  {entry.Row.Cells["method"].Value}  {entry.Row.Cells["url"].Value}";
         headers.Text = HeaderText(entry, "request");
         responseHeaders.Text = HeaderText(entry, "response");
-        requestRaw.Text = Format(entry, "request");
-        responseRaw.Text = Format(entry, "response");
+        requestAuth.Text = SpecialHeadersText(entry, "request", name => name.Contains("Authorization", StringComparison.OrdinalIgnoreCase), "No request authentication headers received.");
+        responseAuth.Text = SpecialHeadersText(entry, "response", name => name.Contains("Authenticate", StringComparison.OrdinalIgnoreCase), "No response authentication headers received.");
+        requestCookies.Text = SpecialHeadersText(entry, "request", name => name.Contains("Cookie", StringComparison.OrdinalIgnoreCase), "No request cookie headers received.");
+        responseCookies.Text = SpecialHeadersText(entry, "response", name => name.Contains("Cookie", StringComparison.OrdinalIgnoreCase), "No response cookie headers received.");
+        requestRaw.Text = RawText(entry, "request");
+        responseRaw.Text = RawText(entry, "response");
+        requestJson.Text = Format(entry, "request");
+        responseJson.Text = Format(entry, "response");
         timing.Text = Format(entry, "completed");
         body.Text = BodyText(entry, "request");
         responseBody.Text = BodyText(entry, "response");
+        requestSyntax.Text = SyntaxText(entry, "request");
+        responseSyntax.Text = SyntaxText(entry, "response");
+        SetImage(requestImage, requestImageState, entry, "request");
+        SetImage(responseImage, responseImageState, entry, "response");
+        requestHex.Text = HexText(entry, "request");
+        responseHex.Text = HexText(entry, "response");
+        RenderWebView(requestWeb, requestWebState, WebDocument(entry, "request"));
+        RenderWebView(responseWeb, responseWebState, WebDocument(entry, "response"));
+    }
+
+    private void ClearInspectors()
+    {
+        foreach (var box in new[] { headers, responseHeaders, body, responseBody, requestSyntax, responseSyntax,
+            requestHex, responseHex, requestAuth, responseAuth, requestCookies, responseCookies,
+            requestRaw, responseRaw, requestJson, responseJson, timing }) box.Clear();
+        ClearImage(requestImage, requestImageState);
+        ClearImage(responseImage, responseImageState);
+        RenderWebView(requestWeb, requestWebState, WebMessage("Select a session with a captured HTML body."));
+        RenderWebView(responseWeb, responseWebState, WebMessage("Select a session with a captured HTML body."));
     }
 
     private static string HeaderText(RequestEntry entry, string kind)
@@ -549,7 +955,7 @@ internal sealed class CaptureForm : Form
         if (!entry.Events.TryGetValue(kind, out var record))
         {
             var message = kind == "request" ? "No request event received. Method and request headers are unknown." : "No response event received. Status and response headers are unknown.";
-            if (entry.Events.ContainsKey("completed")) message += "\r\nA completed event was received. Missing data may not arrive; check Timing and the journal.";
+            if (entry.Events.ContainsKey("completed")) message += "\r\nOnly the completed lifecycle event was observed. Capture may have attached after this request began; missing request/response/body data cannot be reconstructed. Check Statistics and the journal.";
             return message + "\r\nActivity ID: " + entry.ActivityId + "\r\nReceived events: "
                 + string.Join(", ", entry.Events.Keys.Concat(entry.BodyPreviews.Keys.Select(direction => "body-chunk:" + direction)));
         }
@@ -568,6 +974,174 @@ internal sealed class CaptureForm : Form
     private string Format(RequestEntry entry, string kind) => entry.Events.TryGetValue(kind, out var value)
         ? kind + Environment.NewLine + JsonSerializer.Serialize(value, pretty) + Environment.NewLine : kind + ": No data received" + Environment.NewLine;
 
+    private static string SpecialHeadersText(RequestEntry entry, string kind, Func<string, bool> matches, string emptyMessage)
+    {
+        if (!entry.Events.TryGetValue(kind, out var record) || record.GetProperty("kind").GetString() == "disk-only")
+            return emptyMessage;
+        var text = new StringBuilder();
+        foreach (var group in new[] { "headers", "contentHeaders" })
+            if (record.TryGetProperty(group, out var values) && values.ValueKind == JsonValueKind.Object)
+                foreach (var header in values.EnumerateObject())
+                    if (matches(header.Name)) text.AppendLine($"{header.Name}: {header.Value.GetString()}");
+        if (text.Length == 0) return emptyMessage;
+        return text.ToString();
+    }
+
+    private string RawText(RequestEntry entry, string kind) =>
+        "Reconstructed from captured metadata; this is not the original wire byte stream.\r\n\r\n"
+        + HeaderText(entry, kind) + "\r\n" + BodyText(entry, kind);
+
+    private string SyntaxText(RequestEntry entry, string direction)
+    {
+        var bytes = BodyBytes(entry, direction);
+        if (bytes is null || bytes.Length == 0) return BodyText(entry, direction);
+        string text;
+        try { text = new UTF8Encoding(false, true).GetString(bytes); }
+        catch (DecoderFallbackException) { return "Body is not valid UTF-8. Use HexView."; }
+        try
+        {
+            using var document = JsonDocument.Parse(text);
+            return JsonSerializer.Serialize(document.RootElement, pretty);
+        }
+        catch (JsonException) { }
+        try { return XDocument.Parse(text).ToString(); }
+        catch (Exception error) when (error is System.Xml.XmlException or InvalidOperationException) { }
+        return "No JSON or XML syntax detected.\r\n\r\n" + text;
+    }
+
+    private string HexText(RequestEntry entry, string direction)
+    {
+        var bytes = BodyBytes(entry, direction);
+        if (bytes is null || bytes.Length == 0) return BodyText(entry, direction);
+        const int displayLimit = 64 * 1024;
+        var length = Math.Min(bytes.Length, displayLimit);
+        var text = new StringBuilder(length * 4);
+        text.AppendLine($"{bytes.Length} captured preview bytes; showing {length}.").AppendLine();
+        for (var offset = 0; offset < length; offset += 16)
+        {
+            text.Append(offset.ToString("X8", CultureInfo.InvariantCulture)).Append("  ");
+            for (var index = 0; index < 16; index++)
+                text.Append(offset + index < length ? bytes[offset + index].ToString("X2", CultureInfo.InvariantCulture) + " " : "   ");
+            text.Append(" ");
+            for (var index = 0; index < 16 && offset + index < length; index++)
+            {
+                var value = bytes[offset + index];
+                text.Append(value is >= 32 and <= 126 ? (char)value : '.');
+            }
+            text.AppendLine();
+        }
+        if (bytes.Length > length) text.AppendLine().Append("Hex display truncated; the journal retains all persisted body chunks.");
+        return text.ToString();
+    }
+
+    private static byte[]? BodyBytes(RequestEntry entry, string direction)
+    {
+        if (entry.BodyPreviews.TryGetValue(direction, out var preview)) return preview.Data.ToArray();
+        if (!entry.Events.TryGetValue("body:" + direction, out var value)
+            || !value.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.String) return null;
+        try { return Convert.FromBase64String(data.GetString() ?? ""); }
+        catch (FormatException) { return null; }
+    }
+
+    private static string? ContentType(RequestEntry entry, string direction)
+    {
+        var kind = direction == "request" ? "request" : "response";
+        if (!entry.Events.TryGetValue(kind, out var record)) return null;
+        foreach (var group in new[] { "contentHeaders", "headers" })
+            if (record.TryGetProperty(group, out var values) && values.ValueKind == JsonValueKind.Object)
+                foreach (var header in values.EnumerateObject())
+                    if (header.Name.Equals("Content-Type", StringComparison.OrdinalIgnoreCase)) return header.Value.GetString();
+        return null;
+    }
+
+    private static void SetImage(PictureBox imageBox, Label state, RequestEntry entry, string direction)
+    {
+        ClearImage(imageBox, state);
+        var bytes = BodyBytes(entry, direction);
+        if (bytes is null || bytes.Length == 0)
+        {
+            state.Text = MissingBodyMessage(entry, direction, "image preview");
+            return;
+        }
+        if (entry.BodyPreviews.TryGetValue(direction, out var preview)
+            && (!entry.Events.TryGetValue("body:" + direction, out var summary)
+                || !summary.TryGetProperty("streamEnded", out var ended) || ended.ValueKind != JsonValueKind.True
+                || preview.BytesSeen != preview.Data.Length))
+        {
+            state.Text = $"Image preview unavailable: body is incomplete ({preview.Data.Length} of {preview.BytesSeen} bytes retained).";
+            return;
+        }
+        try
+        {
+            using var stream = new MemoryStream(bytes, writable: false);
+            using var source = Image.FromStream(stream, useEmbeddedColorManagement: true, validateImageData: true);
+            imageBox.Image = new Bitmap(source);
+            state.Text = $"{source.RawFormat} | {source.Width} x {source.Height} | {bytes.Length:N0} bytes | {ContentType(entry, direction) ?? "content type unavailable"}";
+            state.Visible = false;
+        }
+        catch (ArgumentException)
+        {
+            state.Text = $"Captured body is not a supported image ({ContentType(entry, direction) ?? "content type unavailable"}).";
+        }
+    }
+
+    private static void ClearImage(PictureBox imageBox, Label state)
+    {
+        var image = imageBox.Image;
+        imageBox.Image = null;
+        image?.Dispose();
+        state.Text = "No image selected.";
+        state.Visible = true;
+    }
+
+    private static string WebDocument(RequestEntry entry, string direction)
+    {
+        var contentType = ContentType(entry, direction);
+        var bytes = BodyBytes(entry, direction);
+        if (bytes is null || bytes.Length == 0) return WebMessage(MissingBodyMessage(entry, direction, "HTML preview"));
+        try
+        {
+            var html = new UTF8Encoding(false, true).GetString(bytes);
+            var trimmed = html.AsSpan().TrimStart();
+            var declaredHtml = contentType?.Contains("text/html", StringComparison.OrdinalIgnoreCase) == true
+                || contentType?.Contains("application/xhtml+xml", StringComparison.OrdinalIgnoreCase) == true;
+            var looksLikeHtml = trimmed.StartsWith("<!doctype", StringComparison.OrdinalIgnoreCase)
+                || trimmed.StartsWith("<html", StringComparison.OrdinalIgnoreCase)
+                || trimmed.StartsWith("<head", StringComparison.OrdinalIgnoreCase)
+                || trimmed.StartsWith("<body", StringComparison.OrdinalIgnoreCase);
+            return declaredHtml || looksLikeHtml ? html
+                : WebMessage($"WebView is available for captured HTML bodies. Content-Type: {contentType ?? "unavailable"}");
+        }
+        catch (DecoderFallbackException) { return WebMessage("The captured HTML body is not valid UTF-8. Use HexView."); }
+    }
+
+    private static string WebMessage(string message) =>
+        "<!doctype html><meta charset=\"utf-8\"><style>body{font:14px Tahoma,sans-serif;color:#344354;background:#fff;padding:16px}p{margin:0}</style><p>"
+        + WebUtility.HtmlEncode(message) + "</p>";
+
+    private static string MissingBodyMessage(RequestEntry entry, string direction, string preview)
+    {
+        if (direction == "response" && entry.Events.TryGetValue("response", out var response)
+            && response.TryGetProperty("status", out var status) && status.TryGetInt32(out var statusCode)
+            && statusCode == 304)
+            return $"304 Not Modified has no response body for {preview}. The browser reused its local cache. Start capture first, clear the browser cache, then hard-refresh to obtain a 200 response body.";
+        return $"No captured body is available for {preview}.";
+    }
+
+    private static void RenderWebView(WebView2 webView, Label state, string document)
+    {
+        webView.Tag = document;
+        if (webView.CoreWebView2 is null)
+        {
+            state.Text = "Initializing WebView...";
+            state.Visible = true;
+            return;
+        }
+        state.Text = "Loading captured HTML...";
+        state.Visible = true;
+        webView.NavigateToString(document);
+    }
+
     private string BodyText(RequestEntry entry, string direction)
     {
         if (entry.BodyPreviews.TryGetValue(direction, out var preview))
@@ -580,7 +1154,7 @@ internal sealed class CaptureForm : Form
             if (completed && !ended) text += JsonSerializer.Serialize(summary, pretty) + Environment.NewLine;
             return text + "\r\nUTF-8 preview (partial characters or encoding mismatches may appear as replacement characters):\r\n" + Encoding.UTF8.GetString(preview.Data.GetBuffer(), 0, (int)preview.Data.Length);
         }
-        if (!entry.Events.TryGetValue("body:" + direction, out var value)) return direction + ": Body not captured or not yet received\r\n";
+        if (!entry.Events.TryGetValue("body:" + direction, out var value)) return MissingBodyMessage(entry, direction, "body inspection") + "\r\n";
         var description = direction + Environment.NewLine;
         if (value.TryGetProperty("data", out var data))
         {
@@ -598,8 +1172,7 @@ internal sealed class CaptureForm : Form
         journal?.Dispose(); journal = null;
         requests.Clear(); grid.Rows.Clear(); cacheOrder.Clear(); cachedBytes = 0; nextRowNumber = 0; storageFailed = false;
         shownEntry = null; shownRevision = -1;
-        headers.Clear(); body.Clear(); timing.Clear(); log.Clear();
-        responseHeaders.Clear(); responseBody.Clear(); requestRaw.Clear(); responseRaw.Clear();
+        ClearInspectors(); log.Clear();
         selection.Text = "No session selected";
         export.Enabled = false; counter.Text = "0 sessions / 0 events";
     }
@@ -614,7 +1187,7 @@ internal sealed class CaptureForm : Form
 
     private void SetCapturing(bool capturing)
     {
-        processes.Enabled = refresh.Enabled = start.Enabled = clear.Enabled = !capturing;
+        processes.Enabled = refresh.Enabled = start.Enabled = autoCapture.Enabled = clear.Enabled = clearIeCache.Enabled = !capturing;
         stop.Enabled = capturing;
         export.Enabled = !capturing && journal?.Count > 0;
     }
@@ -656,30 +1229,49 @@ internal sealed class CaptureForm : Form
 
     internal static int RunSelfTest()
     {
+        SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
         var command = CaptureCommand(123);
         if (!command.ArgumentList.TakeLast(3).SequenceEqual(new[] { "--worker", "123", "--continuous" }))
             throw new InvalidOperationException("UI must start continuous body capture.");
+        var cacheCommand = ClearInternetCacheCommand();
+        if (!Path.GetFileName(cacheCommand.FileName).Equals("rundll32.exe", StringComparison.OrdinalIgnoreCase)
+            || !cacheCommand.ArgumentList.SequenceEqual(new[] { "InetCpl.cpl,ClearMyTracksByProcess", "8" }))
+            throw new InvalidOperationException("IE cache cleanup must only clear temporary Internet files.");
         using var form = new CaptureForm(true);
         form.Show();
         Application.DoEvents();
         static IEnumerable<Control> Descendants(Control parent) => parent.Controls.Cast<Control>()
             .SelectMany(child => new[] { child }.Concat(Descendants(child)));
         var root = (TableLayoutPanel)form.Controls[0];
-        if (root.RowCount != 3 || root.GetRow(form.processes.Parent!) != 0 || form.export.Enabled)
-            throw new InvalidOperationException("The process toolbar must be the first row; Export must start disabled.");
+        if (root.RowCount != 4 || root.GetControlFromPosition(0, 0) is not MenuStrip
+            || root.GetRow(form.processes.Parent!) != 1 || form.export.Enabled)
+            throw new InvalidOperationException("Fiddler-style menu/toolbar layout or initial Export state failed.");
+        if (form.detailTabs.TabPages.Count != 3 || form.detailTabs.TabPages[0].Text != "Statistics"
+            || form.detailTabs.TabPages[1].Text != "Inspectors" || form.detailTabs.SelectedIndex != 1
+            || form.grid.Columns["duration"]?.Visible != false || form.grid.Columns["type"]?.Visible != false
+            || form.grid.Columns["time"]?.Visible != false)
+            throw new InvalidOperationException("Inspector tabs or compact session columns are not in their expected default state.");
+        var expectedInspectorTabs = new[] { "Headers", "TextView", "SyntaxView", "ImageView", "HexView", "WebView", "Auth", "Cookies", "Raw", "JSON" };
+        var inspectorTabs = Descendants(form).OfType<TabControl>().Where(tabs => !ReferenceEquals(tabs, form.detailTabs)).ToArray();
+        if (inspectorTabs.Length != 2 || inspectorTabs.Any(tabs => !tabs.Multiline
+            || !tabs.TabPages.Cast<TabPage>().Select(tab => tab.Text).SequenceEqual(expectedInspectorTabs)))
+            throw new InvalidOperationException("Request/Response inspector tabs are incomplete or out of order.");
         if (Descendants(form).Any(control => control is NumericUpDown or CheckBox))
             throw new InvalidOperationException("Removed capture options are still visible.");
-        if (form.clear.Parent != form.processes.Parent || form.export.Parent != form.processes.Parent
+        if (form.autoCapture.Parent != form.processes.Parent || form.clear.Parent != form.processes.Parent
+            || form.clearIeCache.Parent != form.processes.Parent || form.export.Parent != form.processes.Parent
             || Descendants(form).Any(control => control.Text == "Open capture directory"))
             throw new InvalidOperationException("Capture actions must share the process toolbar without a folder button.");
+        form.AddRecord("""{"kind":"body","activityId":"sample","direction":"request","encoding":"base64","bytes":11,"truncated":false,"streamEnded":true,"data":"eyJvayI6dHJ1ZX0="}""");
         form.AddRecord("""{"kind":"body","activityId":"sample","direction":"response","encoding":"base64","bytes":2,"truncated":false,"streamEnded":true,"data":"T0s="}""");
-        form.AddRecord("""{"kind":"request","activityId":"sample","timestamp":"2026-09-17T09:00:00Z","method":"GET","url":"https://example.test/status","headers":{"Accept":"application/json"},"contentHeaders":{}}""");
-        form.AddRecord("""{"kind":"response","activityId":"sample","timestamp":"2026-09-17T09:00:00.010Z","status":200,"headers":{"Content-Type":"text/plain"},"contentHeaders":{}}""");
+        form.AddRecord("""{"kind":"request","activityId":"sample","timestamp":"2026-09-17T09:00:00Z","method":"GET","url":"https://example.test/status?token=secret","headers":{"Accept":"application/json","Authorization":"Bearer secret","Cookie":"session=secret"},"contentHeaders":{"Content-Type":"application/json"}}""");
+        form.AddRecord("""{"kind":"response","activityId":"sample","timestamp":"2026-09-17T09:00:00.010Z","status":200,"headers":{"Set-Cookie":"session=updated"},"contentHeaders":{"Content-Type":"text/plain"}}""");
         form.AddRecord("""{"kind":"completed","activityId":"sample","requestSentTimestamp":"2026-09-17T09:00:00Z","responseCompletedTimestamp":"2026-09-17T09:00:00.025Z"}""");
         form.grid.Rows[0].Selected = true;
         form.ShowDetails();
-        if (form.requests.Count != 1 || form.journal?.Count != 4 || !form.responseBody.Text.Contains("OK")
-            || form.grid.Rows[0].Cells["duration"].Value?.ToString() != "25.0")
+        if (form.requests.Count != 1 || form.journal?.Count != 5 || !form.responseBody.Text.Contains("OK")
+            || form.grid.Rows[0].Cells["duration"].Value?.ToString() != "25.0"
+            || form.grid.Rows[0].Cells["protocol"].Value?.ToString() != "HTTPS")
             throw new InvalidOperationException("UI event correlation/detail test failed.");
         using var missing = JsonDocument.Parse("""{"requestSentTimestamp":null,"responseCompletedTimestamp":null}""");
         if (Duration(missing.RootElement) is not null) throw new InvalidOperationException("Null timestamp accepted.");
@@ -701,8 +1293,46 @@ internal sealed class CaptureForm : Form
         form.grid.Rows[0].Selected = true;
         form.ShowDetails();
         if (!form.headers.Text.Contains("Accept: application/json") || !form.responseHeaders.Text.Contains("Status: 200")
-            || !form.requestRaw.Text.Contains("activityId") || !form.responseBody.Text.Contains("OK"))
+            || !form.requestSyntax.Text.Contains("\"ok\": true") || !form.responseHex.Text.Contains("4F 4B")
+            || !form.requestAuth.Text.Contains("Authorization: Bearer secret") || !form.requestCookies.Text.Contains("Cookie: session=secret")
+            || !form.responseCookies.Text.Contains("Set-Cookie: session=updated")
+            || !form.requestRaw.Text.Contains("not the original wire byte stream")
+            || !form.requestJson.Text.Contains("activityId") || !form.responseBody.Text.Contains("OK"))
             throw new InvalidOperationException("Split inspectors test failed.");
+        using (var sampleImage = new Bitmap(2, 2))
+        using (var imageStream = new MemoryStream())
+        {
+            sampleImage.SetPixel(0, 0, Color.Red);
+            sampleImage.Save(imageStream, System.Drawing.Imaging.ImageFormat.Png);
+            form.AddRecord(JsonSerializer.Serialize(new { kind = "body", activityId = "image-sample", direction = "response", encoding = "base64", bytes = imageStream.Length, truncated = false, streamEnded = true, data = Convert.ToBase64String(imageStream.ToArray()) }));
+        }
+        form.AddRecord("""{"kind":"response","activityId":"image-sample","timestamp":"2026-09-17T09:00:03Z","status":200,"headers":{},"contentHeaders":{"Content-Type":"image/png"}}""");
+        form.requests["image-sample"].Row.Selected = true;
+        form.ShowDetails();
+        if (form.responseImage.Image?.Size != new Size(2, 2) || !form.responseImageState.Text.Contains("image/png"))
+            throw new InvalidOperationException("ImageView failed to decode the captured response body.");
+        var html = "<!doctype html><html><body><h1>Captured preview</h1><script>window.externalCall=true</script></body></html>";
+        form.AddRecord(JsonSerializer.Serialize(new { kind = "body", activityId = "html-sample", direction = "response", encoding = "base64", bytes = Encoding.UTF8.GetByteCount(html), truncated = false, streamEnded = true, data = Convert.ToBase64String(Encoding.UTF8.GetBytes(html)) }));
+        form.AddRecord("""{"kind":"response","activityId":"html-sample","timestamp":"2026-09-17T09:00:04Z","status":200,"headers":{},"contentHeaders":{"Content-Type":"text/html; charset=utf-8"}}""");
+        form.requests["html-sample"].Row.Selected = true;
+        form.ShowDetails();
+        if (form.responseWeb.Tag is not string webDocument || !webDocument.Contains("Captured preview") || !webDocument.Contains("<script>"))
+            throw new InvalidOperationException("WebView did not receive the captured HTML body.");
+        var webViewInitialization = form.InitializeWebViews();
+        var webViewTimeout = Stopwatch.StartNew();
+        while ((!webViewInitialization.IsCompleted || form.responseWebState.Visible) && webViewTimeout.Elapsed < TimeSpan.FromSeconds(20))
+            Application.DoEvents();
+        var webViewsInitialized = webViewInitialization.IsCompleted && webViewInitialization.GetAwaiter().GetResult();
+        if (!webViewsInitialized || form.requestWeb.CoreWebView2 is null || form.responseWeb.CoreWebView2 is null
+            || form.responseWeb.CoreWebView2.Settings.IsScriptEnabled || form.responseWebState.Visible)
+            throw new InvalidOperationException($"WebView2 initialization or isolated HTML navigation failed: task={webViewInitialization.Status}, initialized={webViewsInitialized}, requestCore={form.requestWeb.CoreWebView2 is not null}, responseCore={form.responseWeb.CoreWebView2 is not null}, scripts={form.responseWeb.CoreWebView2?.Settings.IsScriptEnabled}, stateVisible={form.responseWebState.Visible}, state={form.responseWebState.Text}, log={form.log.Text.Trim()}");
+        form.AddRecord("""{"kind":"request","activityId":"cached-image","timestamp":"2026-09-17T09:00:05Z","method":"GET","url":"https://static.example.test/icon.png","headers":{},"contentHeaders":{}}""");
+        form.AddRecord("""{"kind":"response","activityId":"cached-image","timestamp":"2026-09-17T09:00:05.010Z","status":304,"headers":{},"contentHeaders":{}}""");
+        form.requests["cached-image"].Row.Selected = true;
+        form.ShowDetails();
+        if (!form.responseImageState.Text.Contains("304 Not Modified")
+            || form.responseWeb.Tag is not string cachedWebDocument || !cachedWebDocument.Contains("304 Not Modified"))
+            throw new InvalidOperationException("304 bodyless-response guidance is missing from media inspectors.");
         form.AddRecord("""{"kind":"completed","activityId":"completion-only","url":"https://example.test/completed-only","processId":123,"requestSentTimestamp":null,"responseCompletedTimestamp":null}""");
         var completionOnly = form.requests["completion-only"];
         if (completionOnly.Row.Cells["url"].Value?.ToString() != "https://example.test/completed-only"
@@ -737,13 +1367,13 @@ internal sealed class CaptureForm : Form
             bitmap.Save(Path.Combine(directory, $"ui-test-{size.Width}.png"));
         }
         form.SetCapturing(true);
-        if (form.start.Enabled || !form.stop.Enabled || form.export.Enabled)
+        if (form.start.Enabled || form.autoCapture.Enabled || !form.stop.Enabled || form.clearIeCache.Enabled || form.export.Enabled)
             throw new InvalidOperationException("Capture control state test failed.");
         form.SetCapturing(false);
         var bodyChunk = Convert.ToBase64String(Encoding.UTF8.GetBytes(new string('a', 32768)));
-        for (var sequence = 0; sequence < 10; sequence++)
+        for (var sequence = 0; sequence < 130; sequence++)
             form.AddRecord(JsonSerializer.Serialize(new { kind = "body-chunk", activityId = "sample", direction = "response", sequence, data = bodyChunk }));
-        if (form.requests["sample"].BodyPreviews["response"].Data.Length != MaxCachedEventChars)
+        if (form.requests["sample"].BodyPreviews["response"].Data.Length != MaxBodyPreviewBytes)
             throw new InvalidOperationException("Body preview cache exceeded budget.");
         var persistedPath = form.journal!.FilePath;
         var persistedCount = form.journal.Count;
@@ -766,7 +1396,7 @@ internal sealed class CaptureForm : Form
         if (form.grid.Rows.Count != 0 || form.export.Enabled || form.headers.TextLength != 0)
             throw new InvalidOperationException("Clear state test failed.");
         form.Close();
-        Console.WriteLine("PASS: UI, body chunk preview, 1000-row and 32MiB cache eviction, complete disk export, retained journals after clear, two viewport snapshots. No capture started.");
+        Console.WriteLine("PASS: UI, ImageView/WebView2, body chunk preview, cache eviction, complete disk export, retained journals and viewport snapshots. No capture started.");
         return 0;
     }
 }
