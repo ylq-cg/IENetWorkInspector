@@ -54,9 +54,10 @@ cd IENetWorkInspector
 Open-UI.cmd
 ```
 
-The script builds the project and starts the newly built UI. Windows requests
-administrator approval before the application opens. If a previous instance
-locks the output files, save your results and close it before retrying.
+The script builds the project and starts the newly built UI without keeping a
+console window open. Windows requests administrator approval before the
+application opens. If a previous instance locks the output files, save your
+results and close it before retrying.
 
 1. For an existing IE-mode page, click **Refresh**, select its process, then
   click **Start Capture**. For a browser that is not open yet, click
@@ -72,7 +73,7 @@ network requests. No website or traffic capture starts automatically on UI launc
 ## Avoid cached 304 responses
 
 An HTTP `304 Not Modified` response intentionally contains no response body, so
-ImageView, WebView and body inspectors cannot reconstruct the cached resource.
+Preview and Body inspectors cannot reconstruct the cached resource.
 This application uses `HttpDiagnosticProvider`, a passive diagnostics API: it
 cannot disable the browser cache, remove conditional headers such as
 `If-None-Match` or `If-Modified-Since`, or turn a `304` into a `200`.
@@ -190,16 +191,16 @@ The table correlates request, response, body and timing events by activity ID.
 The Fiddler-style workspace has a menu and capture toolbar across the top,
 sessions and a Quick filter bar on the left, and Statistics, Inspectors and Log
 tabs on the right. Request and Response inspectors are stacked vertically.
-Request provides Headers, TextView, SyntaxView, HexView, Auth, Cookies, Raw and
-JSON. Response additionally provides ImageView and WebView because those views
-render response resources rather than outbound request payloads. SyntaxView
-formats captured JSON/XML bodies, ImageView decodes supported complete image
-bodies, and HexView renders a bounded byte preview. WebView renders captured
-HTML with scripts and external requests disabled. Auth/Cookies show captured
-header values without redaction. Raw is
+Request provides Headers, Params, Cookies, Raw, Body and Auth. Response provides
+Headers, Cookies, Raw, Preview and Body. Header, parameter and cookie views use
+structured tables with item counts. Body contains Text, JSON, HEX, MessagePack,
+Protobuf, XML and JavaScript format tabs; request bodies also include Form-Data.
+Preview automatically decodes supported complete images or renders captured HTML
+with scripts and external requests disabled. Auth/Cookies show captured header
+values without redaction. Raw is
 explicitly a reconstruction from public API metadata,
 not original wire bytes. JSON shows the corresponding request/response event.
-TextView shows a bounded UTF-8 preview (replacement characters can occur at chunk
+Body/Text shows a bounded UTF-8 preview (replacement characters can occur at chunk
 boundaries or for non-UTF-8 encodings); it does not execute HTML.
 The original body bytes remain in JSONL exports. Missing body events are not
 presented as empty HTTP content. Drag the splitters to resize the panes.
@@ -218,17 +219,17 @@ Filter sessions by URL, host, method, status or content type and optionally by
 export still includes ALL retained events, including filtered-out sessions.
 The URL/text filter fills the available bar width, while the status selector is
 sized from its longest item so labels such as **All statuses** remain visible.
-The compact table shows session number, result, method, protocol, host and URL.
+The compact table shows session number, status code, method, protocol, host and URL.
 Use **View > Extended Session Columns** to also show duration, content type and
 start time; narrow windows can scroll the columns horizontally.
-ImageView, WebView and the other inspectors only display bodies for sessions
+Preview, Body and the other inspectors only display data for sessions
 already present in the left list. Filter for `image`, `javascript` or a file name
 to locate resource sessions. A missing row can mean the selected PID did not issue
 the request, the browser served it from cache, or the diagnostics API emitted no event.
 An HTTP `304 Not Modified` response has no response body; the browser uses its
 local cached copy, which this process-scoped diagnostic stream does not expose.
 Stop capture, click **Clear IE Cache**, start capture again, then hard-refresh to
-obtain a `200` response if an ImageView/WebView body preview is required. The
+obtain a `200` response if a response Preview or Body view is required. The
 button asks for confirmation and invokes the Windows Internet Options cache-only
 cleanup for the current user; it does not select cookies, history or passwords.
 Close every Edge/IE window and background process before clearing, then reopen

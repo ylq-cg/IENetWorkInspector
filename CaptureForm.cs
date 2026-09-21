@@ -29,26 +29,40 @@ internal sealed class CaptureForm : Form
         SelectionMode = DataGridViewSelectionMode.FullRowSelect, AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.None,
         BackgroundColor = Color.White, BorderStyle = BorderStyle.None, AutoGenerateColumns = false
     };
-    private readonly TextBox headers = DetailBox();
     private readonly TextBox body = DetailBox();
-    private readonly TextBox responseHeaders = DetailBox();
     private readonly TextBox responseBody = DetailBox();
-    private readonly TextBox requestSyntax = DetailBox();
-    private readonly TextBox responseSyntax = DetailBox();
+    private readonly DataGridView requestHeadersGrid = InspectorGrid("Key", "Value");
+    private readonly DataGridView requestParamsGrid = InspectorGrid("Key", "Value");
+    private readonly DataGridView requestCookiesGrid = InspectorGrid("Name", "Value");
+    private readonly DataGridView responseHeadersGrid = InspectorGrid("Key", "Value");
+    private readonly DataGridView responseCookiesGrid = InspectorGrid("Name", "Value", "Expires", "Max-Age", "Domain", "Path", "Secure", "HttpOnly", "SameSite");
+    private readonly TextBox requestBodyJson = DetailBox();
+    private readonly TextBox responseBodyJson = DetailBox();
+    private readonly TextBox requestBodyXml = DetailBox();
+    private readonly TextBox responseBodyXml = DetailBox();
+    private readonly TextBox requestBodyJavaScript = DetailBox();
+    private readonly TextBox responseBodyJavaScript = DetailBox();
+    private readonly TextBox requestFormData = DetailBox();
     private readonly PictureBox responseImage = ImageBox();
     private readonly Label responseImageState = MediaState();
     private readonly TextBox requestHex = DetailBox();
     private readonly TextBox responseHex = DetailBox();
     private readonly WebView2 responseWeb = WebView();
     private readonly Label responseWebState = MediaState("Initializing WebView...");
+    private Control responseImageView = null!;
+    private Control responseWebView = null!;
     private readonly TextBox requestAuth = DetailBox();
-    private readonly TextBox responseAuth = DetailBox();
-    private readonly TextBox requestCookies = DetailBox();
-    private readonly TextBox responseCookies = DetailBox();
     private readonly TextBox requestRaw = DetailBox();
     private readonly TextBox responseRaw = DetailBox();
-    private readonly TextBox requestJson = DetailBox();
-    private readonly TextBox responseJson = DetailBox();
+    private readonly Label requestSummary = InspectorSummary();
+    private readonly Label responseSummary = InspectorSummary();
+    private readonly FlowLayoutPanel requestBadges = InspectorBadges();
+    private readonly FlowLayoutPanel responseBadges = InspectorBadges();
+    private TabPage requestHeadersTab = null!;
+    private TabPage requestParamsTab = null!;
+    private TabPage requestCookiesTab = null!;
+    private TabPage responseHeadersTab = null!;
+    private TabPage responseCookiesTab = null!;
     private readonly TextBox filter = new() { Width = 230, PlaceholderText = "Filter URL / host / method / status" };
     private readonly ComboBox statusFilter = new() { DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly Label selection = new() { AutoSize = true, Text = "No session selected", Dock = DockStyle.Top, Padding = new Padding(8), AutoEllipsis = true, MaximumSize = new Size(0, 62) };
@@ -195,6 +209,7 @@ internal sealed class CaptureForm : Form
         filters.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         filters.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         filters.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        statusFilter.Font = Font;
         statusFilter.Items.AddRange(new object[] { "All statuses", "2xx", "3xx", "4xx / 5xx", "No response" });
         statusFilter.SelectedIndex = 0;
         SizeComboBoxToContent(statusFilter);
@@ -216,20 +231,12 @@ internal sealed class CaptureForm : Form
         var inspectors = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal, Size = new Size(500, 600), Panel1MinSize = 150, Panel2MinSize = 150, SplitterWidth = 5, BackColor = Color.FromArgb(140, 157, 177) };
         inspectors.Panel1.BackColor = Color.FromArgb(245, 247, 250);
         inspectors.Panel2.BackColor = Color.FromArgb(245, 247, 250);
-        inspectors.Panel1.Controls.Add(Inspector("Request Inspector", headers, body, requestSyntax,
-            requestHex, requestAuth, requestCookies, requestRaw, requestJson));
-        inspectors.Panel2.Controls.Add(Inspector("Response Inspector", responseHeaders, responseBody, responseSyntax,
-            responseHex, responseAuth, responseCookies, responseRaw, responseJson,
-            ImageViewer(responseImage, responseImageState), WebViewer(responseWeb, responseWebState)));
-        var inspectLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2 };
+        inspectors.Panel1.Controls.Add(BuildRequestInspector());
+        inspectors.Panel2.Controls.Add(BuildResponseInspector());
+        var inspectLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 1 };
         inspectLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        inspectLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         inspectLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        selection.BackColor = Color.FromArgb(220, 228, 237);
-        selection.ForeColor = Color.FromArgb(28, 42, 58);
-        selection.Font = new Font("Tahoma", 9F, FontStyle.Bold);
-        inspectLayout.Controls.Add(selection, 0, 0);
-        inspectLayout.Controls.Add(inspectors, 0, 1);
+        inspectLayout.Controls.Add(inspectors, 0, 0);
         AddTab(detailTabs, "Statistics", timing);
         AddTab(detailTabs, "Inspectors", inspectLayout);
         AddTab(detailTabs, "Log", log);
@@ -251,7 +258,7 @@ internal sealed class CaptureForm : Form
         layout.Controls.Add(statusBar, 0, 3);
         Controls.Add(layout);
         AddColumn("number", "#", 38);
-        AddColumn("status", "Result", 58);
+        AddColumn("status", "Status Code", 92);
         AddColumn("method", "Method", 64);
         AddColumn("protocol", "Protocol", 68);
         AddColumn("host", "Host", 150);
@@ -323,7 +330,42 @@ internal sealed class CaptureForm : Form
         };
     }
 
-    private static TextBox DetailBox() => new() { Dock = DockStyle.Fill, Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Both, WordWrap = false, BorderStyle = BorderStyle.FixedSingle, BackColor = Color.White, Font = new Font("Consolas", 9.5F) };
+    private static TextBox DetailBox() => new() { Dock = DockStyle.Fill, Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Both, WordWrap = false, BorderStyle = BorderStyle.None, BackColor = Color.White, Font = new Font("Consolas", 9.5F), Margin = Padding.Empty };
+    private static Label InspectorSummary() => new() { Dock = DockStyle.Fill, AutoEllipsis = true, TextAlign = ContentAlignment.MiddleRight, ForeColor = Color.FromArgb(117, 127, 142), Padding = new Padding(6, 0, 8, 0) };
+    private static DataGridView InspectorGrid(params string[] columns)
+    {
+        var table = new DataGridView
+        {
+            Dock = DockStyle.Fill, ReadOnly = true, AllowUserToAddRows = false,
+            AllowUserToDeleteRows = false, RowHeadersVisible = false, MultiSelect = false,
+            SelectionMode = DataGridViewSelectionMode.FullRowSelect, AutoGenerateColumns = false,
+            AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.None, BackgroundColor = Color.White,
+            BorderStyle = BorderStyle.None, CellBorderStyle = DataGridViewCellBorderStyle.SingleHorizontal,
+            GridColor = Color.FromArgb(235, 238, 242), ColumnHeadersHeight = 30,
+            ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing,
+            EnableHeadersVisualStyles = false, AllowUserToResizeRows = false
+        };
+        table.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(247, 248, 250);
+        table.ColumnHeadersDefaultCellStyle.ForeColor = Color.FromArgb(46, 54, 66);
+        table.DefaultCellStyle.SelectionBackColor = Color.FromArgb(224, 234, 249);
+        table.DefaultCellStyle.SelectionForeColor = Color.FromArgb(28, 38, 52);
+        table.AlternatingRowsDefaultCellStyle.BackColor = Color.FromArgb(248, 249, 251);
+        table.RowTemplate.Height = 28;
+        table.Paint += (_, eventArgs) =>
+        {
+            if (table.Rows.Count != 0) return;
+            TextRenderer.DrawText(eventArgs.Graphics, "No data to display.", table.Font, table.ClientRectangle,
+                Color.FromArgb(117, 127, 142), TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+        };
+        for (var index = 0; index < columns.Length; index++)
+            table.Columns.Add(new DataGridViewTextBoxColumn
+            {
+                Name = "column" + index, HeaderText = columns[index],
+                AutoSizeMode = index == columns.Length - 1 ? DataGridViewAutoSizeColumnMode.Fill : DataGridViewAutoSizeColumnMode.None,
+                Width = columns.Length == 2 ? 220 : 120, MinimumWidth = 70, SortMode = DataGridViewColumnSortMode.NotSortable
+            });
+        return table;
+    }
     private static PictureBox ImageBox() => new() { Dock = DockStyle.Fill, BackColor = Color.White, SizeMode = PictureBoxSizeMode.Zoom };
     private static Label MediaState(string text = "No image selected.") => new() { Dock = DockStyle.Fill, Text = text, TextAlign = ContentAlignment.MiddleCenter, AutoEllipsis = true, Padding = new Padding(12), ForeColor = Color.FromArgb(75, 87, 100), BackColor = Color.White };
     private static WebView2 WebView() => new() { Dock = DockStyle.Fill, DefaultBackgroundColor = Color.White };
@@ -338,29 +380,94 @@ internal sealed class CaptureForm : Form
         button.Padding = new Padding(4, 1, 4, 1);
         button.Margin = new Padding(2);
     }
-    private static Control Inspector(string title, TextBox headerBox, TextBox bodyBox, TextBox syntaxBox,
-        TextBox hexBox, TextBox authBox, TextBox cookiesBox, TextBox rawBox, TextBox jsonBox,
-        Control? imageView = null, Control? webView = null)
+    private Control BuildRequestInspector()
     {
-        var panel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2 };
+        var tabs = InspectorTabs();
+        requestHeadersTab = AddTab(tabs, "Headers", requestHeadersGrid);
+        requestParamsTab = AddTab(tabs, "Params", requestParamsGrid);
+        requestCookiesTab = AddTab(tabs, "Cookies", requestCookiesGrid);
+        AddTab(tabs, "Raw", requestRaw);
+        AddTab(tabs, "Body", BodyInspector(body, requestBodyJson, requestHex, requestBodyXml, requestBodyJavaScript, requestFormData));
+        AddTab(tabs, "Auth", requestAuth);
+        return Inspector("Request", requestSummary, requestBadges, tabs);
+    }
+    private Control BuildResponseInspector()
+    {
+        var preview = new Panel { Dock = DockStyle.Fill, BackColor = Color.White };
+        responseImageView = ImageViewer(responseImage, responseImageState);
+        responseWebView = WebViewer(responseWeb, responseWebState);
+        preview.Controls.Add(responseWebView);
+        preview.Controls.Add(responseImageView);
+        responseImageView.Visible = false;
+        var tabs = InspectorTabs();
+        responseHeadersTab = AddTab(tabs, "Headers", responseHeadersGrid);
+        responseCookiesTab = AddTab(tabs, "Cookies", responseCookiesGrid);
+        AddTab(tabs, "Raw", responseRaw);
+        AddTab(tabs, "Preview", preview);
+        AddTab(tabs, "Body", BodyInspector(responseBody, responseBodyJson, responseHex, responseBodyXml, responseBodyJavaScript));
+        return Inspector("Response", responseSummary, responseBadges, tabs);
+    }
+    private static Control Inspector(string title, Label summary, FlowLayoutPanel badges, TabControl tabs)
+    {
+        var panel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, Margin = Padding.Empty };
         panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
         panel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        panel.Controls.Add(new Label { Text = title, AutoSize = false, Dock = DockStyle.Fill, Font = new Font("Tahoma", 9F, FontStyle.Bold), ForeColor = Color.FromArgb(42, 56, 72), BackColor = Color.FromArgb(218, 226, 235), Padding = new Padding(7, 0, 5, 0), TextAlign = ContentAlignment.MiddleLeft }, 0, 0);
-        var tabs = new TabControl { Dock = DockStyle.Fill, Multiline = true, Font = new Font("Tahoma", 8F) };
-        AddTab(tabs, "Headers", headerBox);
-        AddTab(tabs, "TextView", bodyBox);
-        AddTab(tabs, "SyntaxView", syntaxBox);
-        if (imageView is not null) AddTab(tabs, "ImageView", imageView);
-        AddTab(tabs, "HexView", hexBox);
-        if (webView is not null) AddTab(tabs, "WebView", webView);
-        AddTab(tabs, "Auth", authBox);
-        AddTab(tabs, "Cookies", cookiesBox);
-        AddTab(tabs, "Raw", rawBox);
-        AddTab(tabs, "JSON", jsonBox);
+        var header = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, Margin = Padding.Empty, BackColor = Color.White };
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        header.Controls.Add(new Label { Text = title, AutoSize = true, ForeColor = Color.FromArgb(117, 127, 142), Margin = new Padding(7, 9, 4, 0) }, 0, 0);
+        header.Controls.Add(summary, 1, 0);
+        header.Controls.Add(badges, 2, 0);
+        panel.Controls.Add(header, 0, 0);
         panel.Controls.Add(tabs, 0, 1);
         return panel;
     }
+    private static TabControl InspectorTabs()
+    {
+        var tabs = new TabControl { Dock = DockStyle.Fill, Font = new Font("Segoe UI", 9F), DrawMode = TabDrawMode.OwnerDrawFixed, Padding = new Point(12, 4) };
+        tabs.DrawItem += DrawInspectorTab;
+        return tabs;
+    }
+    private static FlowLayoutPanel InspectorBadges() => new() { AutoSize = true, Anchor = AnchorStyles.Top | AnchorStyles.Right, WrapContents = false, FlowDirection = FlowDirection.LeftToRight, Margin = new Padding(0, 5, 6, 4) };
+    private static void SetBadges(FlowLayoutPanel panel, params (string Text, Color Color)[] badges)
+    {
+        panel.SuspendLayout();
+        panel.Controls.Clear();
+        foreach (var badge in badges.Where(item => !string.IsNullOrWhiteSpace(item.Text)))
+            panel.Controls.Add(new Label
+            {
+                Text = badge.Text, AutoSize = true, ForeColor = badge.Color,
+                BackColor = Color.White, BorderStyle = BorderStyle.FixedSingle,
+                Padding = new Padding(5, 1, 5, 1), Margin = new Padding(3, 0, 0, 0), Font = new Font("Segoe UI", 8F)
+            });
+        panel.ResumeLayout();
+    }
+    private static void DrawInspectorTab(object? sender, DrawItemEventArgs eventArgs)
+    {
+        if (sender is not TabControl tabs) return;
+        var selected = eventArgs.Index == tabs.SelectedIndex;
+        eventArgs.Graphics.FillRectangle(Brushes.White, eventArgs.Bounds);
+        TextRenderer.DrawText(eventArgs.Graphics, tabs.TabPages[eventArgs.Index].Text, tabs.Font,
+            eventArgs.Bounds, Color.FromArgb(35, 41, 51), TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+        if (selected) eventArgs.Graphics.FillRectangle(new SolidBrush(Color.FromArgb(56, 113, 224)),
+            new Rectangle(eventArgs.Bounds.Left + 3, eventArgs.Bounds.Bottom - 3, eventArgs.Bounds.Width - 6, 3));
+    }
+    private static Control BodyInspector(TextBox text, TextBox json, TextBox hex, TextBox xml, TextBox javascript, TextBox? formData = null)
+    {
+        var tabs = InspectorTabs();
+        AddTab(tabs, "Text", text);
+        AddTab(tabs, "JSON", json);
+        AddTab(tabs, "HEX", hex);
+        AddTab(tabs, "MessagePack", EmptyState("MessagePack decoding is not available for this captured body."));
+        AddTab(tabs, "Protobuf", EmptyState("A schema is required to decode Protocol Buffers."));
+        if (formData is not null) AddTab(tabs, "Form-Data", formData);
+        AddTab(tabs, "XML", xml);
+        AddTab(tabs, "JavaScript", javascript);
+        return tabs;
+    }
+    private static Control EmptyState(string text) => new Label { Dock = DockStyle.Fill, Text = text, TextAlign = ContentAlignment.MiddleCenter, ForeColor = Color.FromArgb(117, 127, 142), BackColor = Color.White };
     private static Control ImageViewer(PictureBox image, Label state)
     {
         var panel = new Panel { Dock = DockStyle.Fill, BackColor = Color.White };
@@ -444,11 +551,12 @@ internal sealed class CaptureForm : Form
         return completion.Task;
     }
     private static Label Caption(string text) => new() { Text = text, AutoSize = true, ForeColor = Color.FromArgb(48, 59, 70), Margin = new Padding(3, 7, 8, 3) };
-    private static void AddTab(TabControl tabs, string text, Control content)
+    private static TabPage AddTab(TabControl tabs, string text, Control content)
     {
-        var tab = new TabPage(text) { Padding = new Padding(5), BackColor = Color.FromArgb(245, 247, 250) };
+        var tab = new TabPage(text) { Padding = Padding.Empty, BackColor = Color.White };
         tab.Controls.Add(content);
         tabs.TabPages.Add(tab);
+        return tab;
     }
     private void AddColumn(string name, string title, int width, bool fill = false, bool visible = true) => grid.Columns.Add(new DataGridViewTextBoxColumn
     {
@@ -615,7 +723,8 @@ internal sealed class CaptureForm : Form
                 Size.Empty, TextFormatFlags.SingleLine | TextFormatFlags.NoPadding).Width)
             .DefaultIfEmpty(0)
             .Max() + SystemInformation.VerticalScrollBarWidth + 18;
-        comboBox.Width = Math.Max(comboBox.MinimumSize.Width, contentWidth);
+        comboBox.MinimumSize = new Size(contentWidth, 0);
+        comboBox.Width = contentWidth;
         comboBox.DropDownWidth = comboBox.Width;
     }
 
@@ -1026,22 +1135,42 @@ internal sealed class CaptureForm : Form
         shownEntry = entry;
         shownRevision = entry.Revision;
         selection.Text = $"#{entry.Row.Cells["number"].Value}  {entry.Row.Cells["method"].Value}  {entry.Row.Cells["url"].Value}";
-        headers.Text = HeaderText(entry, "request");
-        responseHeaders.Text = HeaderText(entry, "response");
+        var requestHeaderCount = FillHeaderGrid(requestHeadersGrid, entry, "request");
+        var responseHeaderCount = FillHeaderGrid(responseHeadersGrid, entry, "response");
+        var parameterCount = FillParameterGrid(requestParamsGrid, entry);
+        var requestCookieCount = FillCookieGrid(requestCookiesGrid, entry, "request");
+        var responseCookieCount = FillCookieGrid(responseCookiesGrid, entry, "response");
+        requestHeadersTab.Text = $"Headers ({requestHeaderCount})";
+        requestParamsTab.Text = $"Params ({parameterCount})";
+        requestCookiesTab.Text = $"Cookies ({requestCookieCount})";
+        responseHeadersTab.Text = $"Headers ({responseHeaderCount})";
+        responseCookiesTab.Text = $"Cookies ({responseCookieCount})";
+        var url = entry.Row.Cells["url"].Value?.ToString() ?? "Request URL unavailable";
+        var method = entry.Row.Cells["method"].Value?.ToString() ?? "";
+        var protocol = entry.Row.Cells["protocol"].Value?.ToString() ?? "";
+        var status = entry.Row.Cells["status"].Value?.ToString() ?? "Pending";
+        requestSummary.Text = url;
+        responseSummary.Text = url;
+        SetBadges(requestBadges, (protocol, Color.FromArgb(102, 116, 138)), (method, Color.FromArgb(102, 116, 138)));
+        var statusColor = int.TryParse(status, out var statusCode) && statusCode >= 400 ? Color.Firebrick
+            : int.TryParse(status, out statusCode) && statusCode >= 300 ? Color.FromArgb(45, 105, 210) : Color.FromArgb(20, 137, 74);
+        SetBadges(responseBadges, (protocol, Color.FromArgb(102, 116, 138)), (status, statusColor));
         requestAuth.Text = SpecialHeadersText(entry, "request", name => name.Contains("Authorization", StringComparison.OrdinalIgnoreCase), "No request authentication headers received.");
-        responseAuth.Text = SpecialHeadersText(entry, "response", name => name.Contains("Authenticate", StringComparison.OrdinalIgnoreCase), "No response authentication headers received.");
-        requestCookies.Text = SpecialHeadersText(entry, "request", name => name.Contains("Cookie", StringComparison.OrdinalIgnoreCase), "No request cookie headers received.");
-        responseCookies.Text = SpecialHeadersText(entry, "response", name => name.Contains("Cookie", StringComparison.OrdinalIgnoreCase), "No response cookie headers received.");
         requestRaw.Text = RawText(entry, "request");
         responseRaw.Text = RawText(entry, "response");
-        requestJson.Text = Format(entry, "request");
-        responseJson.Text = Format(entry, "response");
         timing.Text = Format(entry, "completed");
-        body.Text = BodyText(entry, "request");
-        responseBody.Text = BodyText(entry, "response");
-        requestSyntax.Text = SyntaxText(entry, "request");
-        responseSyntax.Text = SyntaxText(entry, "response");
-        SetImage(responseImage, responseImageState, entry, "response");
+        body.Text = DecodedBodyText(entry, "request");
+        responseBody.Text = DecodedBodyText(entry, "response");
+        requestBodyJson.Text = FormattedBodyText(entry, "request", "json");
+        responseBodyJson.Text = FormattedBodyText(entry, "response", "json");
+        requestBodyXml.Text = FormattedBodyText(entry, "request", "xml");
+        responseBodyXml.Text = FormattedBodyText(entry, "response", "xml");
+        requestBodyJavaScript.Text = DecodedBodyText(entry, "request");
+        responseBodyJavaScript.Text = DecodedBodyText(entry, "response");
+        requestFormData.Text = ParameterText(entry);
+        var imageAvailable = SetImage(responseImage, responseImageState, entry, "response");
+        responseImageView.Visible = imageAvailable;
+        responseWebView.Visible = !imageAvailable;
         requestHex.Text = HexText(entry, "request");
         responseHex.Text = HexText(entry, "response");
         RenderWebView(responseWeb, responseWebState, WebDocument(entry, "response"));
@@ -1049,11 +1178,133 @@ internal sealed class CaptureForm : Form
 
     private void ClearInspectors()
     {
-        foreach (var box in new[] { headers, responseHeaders, body, responseBody, requestSyntax, responseSyntax,
-            requestHex, responseHex, requestAuth, responseAuth, requestCookies, responseCookies,
-            requestRaw, responseRaw, requestJson, responseJson, timing }) box.Clear();
+        foreach (var table in new[] { requestHeadersGrid, requestParamsGrid, requestCookiesGrid, responseHeadersGrid, responseCookiesGrid }) table.Rows.Clear();
+        foreach (var box in new[] { body, responseBody, requestBodyJson, responseBodyJson, requestBodyXml, responseBodyXml,
+            requestBodyJavaScript, responseBodyJavaScript, requestFormData,
+            requestHex, responseHex, requestAuth,
+            requestRaw, responseRaw, timing }) box.Clear();
+        requestHeadersTab.Text = "Headers";
+        requestParamsTab.Text = "Params";
+        requestCookiesTab.Text = "Cookies";
+        responseHeadersTab.Text = "Headers";
+        responseCookiesTab.Text = "Cookies";
+        requestSummary.Text = responseSummary.Text = "";
+        requestBadges.Controls.Clear();
+        responseBadges.Controls.Clear();
         ClearImage(responseImage, responseImageState);
+        responseImageView.Visible = false;
+        responseWebView.Visible = true;
         RenderWebView(responseWeb, responseWebState, WebMessage("Select a session with a captured HTML body."));
+    }
+
+    private static int FillHeaderGrid(DataGridView table, RequestEntry entry, string kind)
+    {
+        table.Rows.Clear();
+        if (!entry.Events.TryGetValue(kind, out var record) || record.GetProperty("kind").GetString() == "disk-only") return 0;
+        if (kind == "request")
+        {
+            var method = record.TryGetProperty("method", out var methodValue) ? methodValue.GetString() ?? "" : "";
+            var urlText = record.TryGetProperty("url", out var urlValue) ? urlValue.GetString() ?? "" : "";
+            if (Uri.TryCreate(urlText, UriKind.Absolute, out var uri))
+            {
+                table.Rows.Add(":method", method);
+                table.Rows.Add(":path", uri.PathAndQuery);
+                table.Rows.Add(":authority", uri.Authority);
+                table.Rows.Add(":scheme", uri.Scheme);
+            }
+        }
+        foreach (var (name, value) in Headers(record)) table.Rows.Add(name.ToLowerInvariant(), value);
+        table.ClearSelection();
+        table.Invalidate();
+        return table.Rows.Count;
+    }
+
+    private static int FillParameterGrid(DataGridView table, RequestEntry entry)
+    {
+        table.Rows.Clear();
+        if (!entry.Events.TryGetValue("request", out var record) || !record.TryGetProperty("url", out var urlValue)
+            || !Uri.TryCreate(urlValue.GetString(), UriKind.Absolute, out var uri) || string.IsNullOrEmpty(uri.Query)) return 0;
+        foreach (var pair in uri.Query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var separator = pair.IndexOf('=');
+            var name = separator < 0 ? pair : pair[..separator];
+            var value = separator < 0 ? "" : pair[(separator + 1)..];
+            table.Rows.Add(DecodeQuery(name), DecodeQuery(value));
+        }
+        table.ClearSelection();
+        table.Invalidate();
+        return table.Rows.Count;
+    }
+
+    private static string DecodeQuery(string value) => Uri.UnescapeDataString(value.Replace('+', ' '));
+
+    private static int FillCookieGrid(DataGridView table, RequestEntry entry, string kind)
+    {
+        table.Rows.Clear();
+        if (!entry.Events.TryGetValue(kind, out var record)) return 0;
+        foreach (var (_, value) in Headers(record).Where(header => header.Name.Contains("Cookie", StringComparison.OrdinalIgnoreCase)))
+        {
+            if (kind == "request")
+            {
+                foreach (var cookie in value.Split(';', StringSplitOptions.RemoveEmptyEntries))
+                {
+                    var separator = cookie.IndexOf('=');
+                    table.Rows.Add(separator < 0 ? cookie.Trim() : cookie[..separator].Trim(), separator < 0 ? "" : cookie[(separator + 1)..].Trim());
+                }
+                continue;
+            }
+            var parts = value.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            var pairSeparator = parts[0].IndexOf('=');
+            var values = new string[9];
+            values[0] = pairSeparator < 0 ? parts[0] : parts[0][..pairSeparator];
+            values[1] = pairSeparator < 0 ? "" : parts[0][(pairSeparator + 1)..];
+            foreach (var attribute in parts.Skip(1))
+            {
+                var attributeSeparator = attribute.IndexOf('=');
+                var attributeName = attributeSeparator < 0 ? attribute : attribute[..attributeSeparator];
+                var attributeValue = attributeSeparator < 0 ? "Yes" : attribute[(attributeSeparator + 1)..];
+                var column = attributeName.ToLowerInvariant() switch { "expires" => 2, "max-age" => 3, "domain" => 4, "path" => 5, "secure" => 6, "httponly" => 7, "samesite" => 8, _ => -1 };
+                if (column >= 0) values[column] = attributeValue;
+            }
+            table.Rows.Add(values);
+        }
+        table.ClearSelection();
+        table.Invalidate();
+        return table.Rows.Count;
+    }
+
+    private static IEnumerable<(string Name, string Value)> Headers(JsonElement record)
+    {
+        foreach (var group in new[] { "headers", "contentHeaders" })
+            if (record.TryGetProperty(group, out var values) && values.ValueKind == JsonValueKind.Object)
+                foreach (var header in values.EnumerateObject()) yield return (header.Name, header.Value.GetString() ?? "");
+    }
+
+    private static string ParameterText(RequestEntry entry)
+    {
+        if (!entry.Events.TryGetValue("request", out var record) || !record.TryGetProperty("url", out var urlValue)
+            || !Uri.TryCreate(urlValue.GetString(), UriKind.Absolute, out var uri) || string.IsNullOrEmpty(uri.Query)) return "No form or query parameters captured.";
+        return string.Join(Environment.NewLine, uri.Query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries).Select(DecodeQuery));
+    }
+
+    private string DecodedBodyText(RequestEntry entry, string direction)
+    {
+        var bytes = BodyBytes(entry, direction);
+        if (bytes is null || bytes.Length == 0) return MissingBodyMessage(entry, direction, "body inspection");
+        try { return new UTF8Encoding(false, true).GetString(bytes); }
+        catch (DecoderFallbackException) { return "Binary body. Use HEX or Preview."; }
+    }
+
+    private string FormattedBodyText(RequestEntry entry, string direction, string format)
+    {
+        var text = DecodedBodyText(entry, direction);
+        if (format == "json")
+        {
+            try { using var document = JsonDocument.Parse(text); return JsonSerializer.Serialize(document.RootElement, pretty); }
+            catch (JsonException) { return "Body is not valid JSON."; }
+        }
+        try { return XDocument.Parse(text).ToString(); }
+        catch (Exception error) when (error is System.Xml.XmlException or InvalidOperationException) { return "Body is not valid XML."; }
     }
 
     private static string HeaderText(RequestEntry entry, string kind)
@@ -1160,14 +1411,14 @@ internal sealed class CaptureForm : Form
         return null;
     }
 
-    private static void SetImage(PictureBox imageBox, Label state, RequestEntry entry, string direction)
+    private static bool SetImage(PictureBox imageBox, Label state, RequestEntry entry, string direction)
     {
         ClearImage(imageBox, state);
         var bytes = BodyBytes(entry, direction);
         if (bytes is null || bytes.Length == 0)
         {
             state.Text = MissingBodyMessage(entry, direction, "image preview");
-            return;
+            return false;
         }
         if (entry.BodyPreviews.TryGetValue(direction, out var preview)
             && (!entry.Events.TryGetValue("body:" + direction, out var summary)
@@ -1175,7 +1426,7 @@ internal sealed class CaptureForm : Form
                 || preview.BytesSeen != preview.Data.Length))
         {
             state.Text = $"Image preview unavailable: body is incomplete ({preview.Data.Length} of {preview.BytesSeen} bytes retained).";
-            return;
+            return false;
         }
         try
         {
@@ -1184,10 +1435,12 @@ internal sealed class CaptureForm : Form
             imageBox.Image = new Bitmap(source);
             state.Text = $"{source.RawFormat} | {source.Width} x {source.Height} | {bytes.Length:N0} bytes | {ContentType(entry, direction) ?? "content type unavailable"}";
             state.Visible = false;
+            return true;
         }
         catch (ArgumentException)
         {
             state.Text = $"Captured body is not a supported image ({ContentType(entry, direction) ?? "content type unavailable"}).";
+            return false;
         }
     }
 
@@ -1370,19 +1623,25 @@ internal sealed class CaptureForm : Form
             || form.grid.Columns["duration"]?.Visible != false || form.grid.Columns["type"]?.Visible != false
             || form.grid.Columns["time"]?.Visible != false)
             throw new InvalidOperationException("Inspector tabs or compact session columns are not in their expected default state.");
-        var expectedRequestTabs = new[] { "Headers", "TextView", "SyntaxView", "HexView", "Auth", "Cookies", "Raw", "JSON" };
-        var expectedResponseTabs = new[] { "Headers", "TextView", "SyntaxView", "ImageView", "HexView", "WebView", "Auth", "Cookies", "Raw", "JSON" };
+        if (form.grid.Columns["status"]?.HeaderText != "Status Code"
+            || form.grid.Columns["status"]?.Width < TextRenderer.MeasureText("Status Code", form.grid.ColumnHeadersDefaultCellStyle.Font).Width)
+            throw new InvalidOperationException("Status Code column header is missing or clipped.");
+        var expectedRequestTabs = new[] { "Headers", "Params", "Cookies", "Raw", "Body", "Auth" };
+        var expectedResponseTabs = new[] { "Headers", "Cookies", "Raw", "Preview", "Body" };
+        var expectedRequestBodyTabs = new[] { "Text", "JSON", "HEX", "MessagePack", "Protobuf", "Form-Data", "XML", "JavaScript" };
+        var expectedResponseBodyTabs = new[] { "Text", "JSON", "HEX", "MessagePack", "Protobuf", "XML", "JavaScript" };
         var inspectorTabs = Descendants(form).OfType<TabControl>().Where(tabs => !ReferenceEquals(tabs, form.detailTabs)).ToArray();
-        if (inspectorTabs.Length != 2 || inspectorTabs.Any(tabs => !tabs.Multiline)
-            || !inspectorTabs.Any(tabs => tabs.TabPages.Cast<TabPage>().Select(tab => tab.Text).SequenceEqual(expectedRequestTabs))
-            || !inspectorTabs.Any(tabs => tabs.TabPages.Cast<TabPage>().Select(tab => tab.Text).SequenceEqual(expectedResponseTabs)))
+        if (!inspectorTabs.Any(tabs => tabs.TabPages.Cast<TabPage>().Select(tab => tab.Text).SequenceEqual(expectedRequestTabs))
+            || !inspectorTabs.Any(tabs => tabs.TabPages.Cast<TabPage>().Select(tab => tab.Text).SequenceEqual(expectedResponseTabs))
+            || !inspectorTabs.Any(tabs => tabs.TabPages.Cast<TabPage>().Select(tab => tab.Text).SequenceEqual(expectedRequestBodyTabs))
+            || !inspectorTabs.Any(tabs => tabs.TabPages.Cast<TabPage>().Select(tab => tab.Text).SequenceEqual(expectedResponseBodyTabs)))
             throw new InvalidOperationException("Request/Response inspector tabs are incomplete or out of order.");
         var expectedStatusWidth = form.statusFilter.Items.Cast<object>()
             .Select(item => TextRenderer.MeasureText(form.statusFilter.GetItemText(item), form.statusFilter.Font,
                 Size.Empty, TextFormatFlags.SingleLine | TextFormatFlags.NoPadding).Width)
             .Max() + SystemInformation.VerticalScrollBarWidth + 18;
-        if (form.statusFilter.Width < expectedStatusWidth || form.filter.Width < form.filter.MinimumSize.Width)
-            throw new InvalidOperationException("Session filter controls do not fit their content.");
+        if (form.statusFilter.Width < expectedStatusWidth)
+            throw new InvalidOperationException($"Status filter does not fit its longest item: actual={form.statusFilter.Width}, expected={expectedStatusWidth}.");
         if (Descendants(form).Any(control => control is NumericUpDown or CheckBox))
             throw new InvalidOperationException("Removed capture options are still visible.");
         if (form.chooseProcess.Parent != form.processes.Parent || form.autoCapture.Parent != form.processes.Parent || form.clear.Parent != form.processes.Parent
@@ -1400,13 +1659,16 @@ internal sealed class CaptureForm : Form
             || form.grid.Rows[0].Cells["duration"].Value?.ToString() != "25.0"
             || form.grid.Rows[0].Cells["protocol"].Value?.ToString() != "HTTPS")
             throw new InvalidOperationException("UI event correlation/detail test failed.");
+        if (form.requestHeadersTab.Text != "Headers (8)" || form.requestParamsTab.Text != "Params (1)"
+            || form.requestCookiesTab.Text != "Cookies (1)" || form.responseCookiesTab.Text != "Cookies (1)")
+            throw new InvalidOperationException("Inspector counts must appear only for the selected session.");
         using var missing = JsonDocument.Parse("""{"requestSentTimestamp":null,"responseCompletedTimestamp":null}""");
         if (Duration(missing.RootElement) is not null) throw new InvalidOperationException("Null timestamp accepted.");
         form.AddRecord("""{"kind":"response","activityId":"failed","timestamp":"2026-09-17T09:00:01Z","status":503,"headers":{},"contentHeaders":{"Content-Type":"application/json"}}""");
         form.AddRecord("""{"kind":"request","activityId":"failed","timestamp":"2026-09-17T09:00:01Z","method":"POST","url":"https://example.test/api/orders","headers":{"Content-Type":"application/json"},"contentHeaders":{}}""");
         form.AddRecord("""{"kind":"request","activityId":"pending","timestamp":"2026-09-17T09:00:02Z","method":"GET","url":"https://static.example.test/site.css","headers":{},"contentHeaders":{}}""");
         form.statusFilter.SelectedIndex = 3;
-        if (form.grid.Rows[0].Visible || !form.requests["failed"].Row.Visible || form.requests["pending"].Row.Visible || form.headers.TextLength != 0)
+        if (form.grid.Rows[0].Visible || !form.requests["failed"].Row.Visible || form.requests["pending"].Row.Visible || form.requestHeadersGrid.Rows.Count != 0)
             throw new InvalidOperationException("Error filter or hidden selection clearing failed.");
         form.filter.Text = "not-found";
         if (form.requests.Values.Any(entry => entry.Row.Visible)) throw new InvalidOperationException("Text filter failed.");
@@ -1419,12 +1681,14 @@ internal sealed class CaptureForm : Form
         form.filter.Clear();
         form.grid.Rows[0].Selected = true;
         form.ShowDetails();
-        if (!form.headers.Text.Contains("Accept: application/json") || !form.responseHeaders.Text.Contains("Status: 200")
-            || !form.requestSyntax.Text.Contains("\"ok\": true") || !form.responseHex.Text.Contains("4F 4B")
-            || !form.requestAuth.Text.Contains("Authorization: Bearer secret") || !form.requestCookies.Text.Contains("Cookie: session=secret")
-            || !form.responseCookies.Text.Contains("Set-Cookie: session=updated")
+        if (!form.requestHeadersGrid.Rows.Cast<DataGridViewRow>().Any(row => row.Cells[0].Value?.ToString() == "accept")
+            || !form.responseHeadersGrid.Rows.Cast<DataGridViewRow>().Any(row => row.Cells[0].Value?.ToString() == "set-cookie")
+            || !form.requestBodyJson.Text.Contains("\"ok\": true") || !form.responseHex.Text.Contains("4F 4B")
+            || !form.requestAuth.Text.Contains("Authorization: Bearer secret")
+            || !form.requestCookiesGrid.Rows.Cast<DataGridViewRow>().Any(row => row.Cells[0].Value?.ToString() == "session")
+            || !form.responseCookiesGrid.Rows.Cast<DataGridViewRow>().Any(row => row.Cells[0].Value?.ToString() == "session")
             || !form.requestRaw.Text.Contains("not the original wire byte stream")
-            || !form.requestJson.Text.Contains("activityId") || !form.responseBody.Text.Contains("OK"))
+            || form.requestParamsGrid.Rows.Count != 1 || !form.responseBody.Text.Contains("OK"))
             throw new InvalidOperationException("Split inspectors test failed.");
         using (var sampleImage = new Bitmap(2, 2))
         using (var imageStream = new MemoryStream())
@@ -1520,7 +1784,7 @@ internal sealed class CaptureForm : Form
         if (form.cachedBytes > CacheBudget || form.requests.Count >= 90 || form.journal?.Count != 90)
             throw new InvalidOperationException("Byte-budget eviction lost records or exceeded memory accounting budget.");
         form.ClearCapture();
-        if (form.grid.Rows.Count != 0 || form.export.Enabled || form.headers.TextLength != 0)
+        if (form.grid.Rows.Count != 0 || form.export.Enabled || form.requestHeadersGrid.Rows.Count != 0)
             throw new InvalidOperationException("Clear state test failed.");
         form.Close();
         Console.WriteLine("PASS: UI, ImageView/WebView2, body chunk preview, cache eviction, complete disk export, retained journals and viewport snapshots. No capture started.");

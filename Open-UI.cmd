@@ -6,5 +6,4 @@ if errorlevel 1 (
 	pause
 	exit /b 1
 )
-"%~dp0bin\RequestMetadata\IeNetworkDemo.exe" --ui
-if errorlevel 1 pause
+start "" "%~dp0bin\RequestMetadata\IeNetworkDemo.exe" --ui
