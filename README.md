@@ -22,6 +22,10 @@ Download the [latest release](https://github.com/ylq-cg/IENetWorkInspector/relea
 - Use the **win-x86** package for an x86 IE-mode process.
 - Extract the archive to a writable directory and run `IENetworkInspector.exe`.
 
+The current source also supports a unified x64 desktop package with an embedded
+x86 capture worker. Build it with `Build-Unified.cmd` as described below. Existing
+architecture-specific release downloads are not retroactively updated.
+
 The release packages are self-contained and do not require a separate .NET
 installation. Windows displays a UAC prompt because process diagnostics require
 an administrator token. Microsoft Edge WebView2 Runtime is required for the
@@ -31,8 +35,8 @@ isolated HTML response preview and is normally installed with Microsoft Edge.
 
 - Finds IE-mode candidate processes and displays their x86/x64 architecture.
 - Shows available page titles and URLs in the process selector and **Choose...** dialog.
-- Supports manual process selection and **Auto Capture** for newly created IE
-  processes.
+- Automatically selects an x86 or x64 worker in the unified desktop package.
+- Supports manual process selection and explicit Start/Stop controls.
 - Lists sessions by status code, method, protocol, host, URL, and timing.
 - Filters sessions by URL, host, method, status, or content type.
 - Shows structured request Headers, Params, Cookies, Raw, Body, and Auth views.
@@ -42,37 +46,42 @@ isolated HTML response preview and is normally installed with Microsoft Edge.
   requests disabled.
 - Captures available request/response bodies until stopped.
 - Saves every event to a local JSONL journal and exports the complete journal.
-- Clears temporary Internet files without selecting cookies, history, or saved
-  passwords.
 - Reports permission, architecture, and native provider startup failures.
 
 ## Capture Traffic
 
 1. Start `IENetworkInspector.exe` and approve the UAC prompt.
-2. Open an existing Edge IE-mode page, click **Refresh**, and choose the process
-   whose architecture matches the application package.
+2. Open an existing Edge IE-mode page, click **Refresh**, and choose its request
+  process. The unified UI selects the matching worker automatically; older
+  architecture-specific packages still require a matching target.
 3. Click **Start Capture** and wait for **Capturing**.
 4. Reproduce or refresh the target page.
 5. Select a session to inspect its request, response, preview, and timing.
 6. Click **Stop**, then **Export JSONL** if the full journal is needed.
 
-To reduce missed first-load requests, close Edge first, click **Auto Capture**,
-and then open the IE-mode page. Auto Capture reduces the attachment race but
-cannot guarantee that the first request is observed.
+Select an existing target process and start capture before reproducing the
+request. The UI does not watch for new processes or attach automatically;
+requests made before attachment may be missed. Refresh and reselect the target
+if navigation creates a different process.
 
 On **Refresh** or **Choose...**, titled candidates appear as
-`PID | Page title - URL`. The tool associates an `Internet Explorer_Server`
+`PID (process 32bit/64bit) | Page title - URL` (the UI uses full-width parentheses).
+For example, an x86 IE process displays its PID, `iexplore 32bit`, and the page
+title followed by its URL. Untitled candidates keep the PID, process name and
+architecture. Unknown architectures are explicitly labeled rather than guessed.
+Manual PID entry remains available. The tool associates an `Internet Explorer_Server`
 window's PID with the nearest titled `TabWindowClass` or `IEFrame` ancestor;
 the ancestor may belong to a different process. **Choose...** retains separate
 process architecture and detection columns. Multiple titles sharing one PID
 are combined into one candidate; capture remains process-wide, not tab-specific.
 
 Only the recognized `HTTP(S) URL - title` caption format is rearranged. Other
-captions remain unchanged, and inaccessible/missing titles fall back to the
+caption formats keep their order. A trailing ` - Internet Explorer` suffix is
+removed when a nonempty title remains; matching words inside the title are kept.
+Inaccessible/missing titles fall back to the
 process name and architecture. Titles are display hints, not authoritative
 request URLs, and may contain sensitive information. Window class names and
 relationships are heuristics, not an official IE-mode tab discovery contract.
-Auto Capture's fast new-process path does not wait for a window title to appear.
 
 A session containing only a `completed` event means capture attached after that
 request started. Missing request, response, and body events cannot be recovered.
@@ -107,12 +116,15 @@ uses its cached copy, which this process-scoped diagnostic stream cannot expose.
 The tool cannot convert a `304` into a `200` or modify request headers because
 `HttpDiagnosticProvider` is a passive diagnostics API.
 
-For a fresh response body:
+The tool does not clear the browser cache. **Clear** only clears the current
+inspector view; previously persisted capture journals remain on disk.
+
+To try obtaining a fresh response body:
 
 1. Close all Edge and Internet Explorer windows and background processes.
-2. Start IE Network Inspector and click **Clear IE Cache**.
-3. Click **Auto Capture**.
-4. Open the target IE-mode page and wait for **Capturing**.
+2. If permitted, clear temporary Internet files using your browser or Windows settings.
+3. Open the target IE-mode page, refresh the process list and select its process.
+4. Click **Start Capture** and wait for **Capturing**.
 5. Navigate or hard-refresh with `Ctrl+F5`.
 
 For browser-controlled cache disabling, open the IE-mode page and run:
@@ -159,10 +171,20 @@ Elevation does not guarantee access to every target process or provider.
 
 ### Target/provider architecture mismatch
 
-The application and target process must use the same architecture. Select the
-matching win-x64 or win-x86 package. The application blocks cross-architecture
-`HttpDiagnosticProvider.Start` calls because they can terminate the worker in
-native code.
+The capture worker and target process must use the same architecture. The unified
+UI checks the target PID immediately before launching capture. It uses itself for
+an x64 target and `workers\x86\IENetworkInspector.exe` for an x86 target.
+This worker selection happens when Start is clicked, not by watching for new
+processes. Unknown/unsupported architectures
+or missing/mismatched worker binaries produce an error rather than a fallback
+to unsafe cross-architecture capture. The worker rechecks target architecture.
+
+Keep the entire unified folder together; do not move only the main EXE. Both
+workers are self-contained and inherit the UI's permissions and redirected
+stop/data channels. They are not launched through an elevation prompt by the UI.
+Direct CLI capture is still architecture-specific: select the matching executable
+when using a PID on the command line. Routing does not resolve unrelated Windows
+provider errors or guarantee complete data capture.
 
 ### Native crash (`0xC0000005`)
 
@@ -206,8 +228,24 @@ dotnet .\bin\IENetworkInspector\IENetworkInspector.dll --self-test
 dotnet .\bin\IENetworkInspector\IENetworkInspector.dll --ui-self-test
 ```
 
-Alternatively, run `Open-UI.cmd`; it builds and starts the UI without keeping a
-console window open.
+For a single desktop entry point on x64 Windows, run:
+
+```cmd
+Build-Unified.cmd
+```
+
+The self-contained output is:
+
+```text
+bin\IENetworkInspector-Unified\IENetworkInspector.exe
+bin\IENetworkInspector-Unified\workers\x86\IENetworkInspector.exe
+```
+
+Run only the top-level EXE; the UI chooses the worker. `Open-UI.cmd` builds this
+unified package and starts the top-level UI. Initial publishing requires downloads
+of both runtime packs. Close running instances before rebuilding. The unified
+package targets x64 Windows; ARM64 and 32-bit Windows are not included in this
+unified packaging change. Separate builds remain available using explicit RIDs.
 
 The application uses public Windows/.NET APIs plus Microsoft WebView2. Window
 title discovery in `IeWindowTitles.cs` uses only the documented `user32.dll`

@@ -183,20 +183,6 @@ internal static class Program
         name.Equals("iexplore", StringComparison.OrdinalIgnoreCase)
         || name.Equals("msedge", StringComparison.OrdinalIgnoreCase);
 
-    internal static List<IeCandidate> FindIeExecutableProcesses()
-    {
-        var candidates = new List<IeCandidate>();
-        foreach (var process in System.Diagnostics.Process.GetProcessesByName("iexplore"))
-        {
-            using (process)
-            {
-                try { candidates.Add(new IeCandidate((uint)process.Id, "iexplore", ProcessArchitecture(process), "New IE executable detected before module inspection")); }
-                catch (InvalidOperationException) { }
-            }
-        }
-        return candidates;
-    }
-
     private static string ProcessArchitecture(System.Diagnostics.Process process)
     {
         try
@@ -221,7 +207,7 @@ internal static class Program
         }
     }
 
-    private static string GetProcessArchitecture(uint processId)
+    internal static string GetProcessArchitecture(uint processId)
     {
         try
         {
@@ -472,6 +458,7 @@ internal static class Program
 
     private static void SelfTest()
     {
+        WorkerRouting.SelfTest();
         CaptureJournal.SelfTest();
         var continuous = Parse(new[] { "123", "--continuous" });
         if (!continuous.Continuous || continuous.BodyBytes != -1 || continuous.Seconds != 0)

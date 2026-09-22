@@ -71,15 +71,26 @@ internal static class IeWindowTitles
         var separator = clean.IndexOf(" - ", StringComparison.Ordinal);
         if (separator > 0 && Uri.TryCreate(clean[..separator], UriKind.Absolute, out var uri)
             && uri.Scheme is "http" or "https" && !string.IsNullOrWhiteSpace(clean[(separator + 3)..]))
-            return clean[(separator + 3)..] + " - " + clean[..separator];
-        return clean;
+            return RemoveBrowserSuffix(clean[(separator + 3)..]) + " - " + clean[..separator];
+        return RemoveBrowserSuffix(clean);
+    }
+
+    private static string RemoveBrowserSuffix(string title)
+    {
+        const string suffix = " - Internet Explorer";
+        return title.EndsWith(suffix, StringComparison.OrdinalIgnoreCase) && title.Length > suffix.Length
+            ? title[..^suffix.Length].TrimEnd() : title;
     }
 
     internal static void SelfTest()
     {
         const string raw = "https://www.163.com/ - \u7f51\u6613 - Internet Explorer";
-        if (FormatTitle(raw) != "\u7f51\u6613 - Internet Explorer - https://www.163.com/"
+        if (FormatTitle(raw) != "\u7f51\u6613 - https://www.163.com/"
             || FormatTitle("A - B") != "A - B" || FormatTitle("https://example.test/") != "https://example.test/"
+            || FormatTitle("Page - Internet Explorer") != "Page"
+            || FormatTitle("Internet Explorer - Guide") != "Internet Explorer - Guide"
+            || FormatTitle("Internet Explorer") != "Internet Explorer"
+            || FormatTitle("https://example.test/ - Internet Explorer - Guide - Internet Explorer") != "Internet Explorer - Guide - https://example.test/"
             || FormatTitle("Title\twith\nlines") != "Title with lines")
             throw new Exception("Window title formatting failed.");
         var titles = Associate(new[]

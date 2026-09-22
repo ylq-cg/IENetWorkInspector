@@ -16,10 +16,8 @@ internal sealed class CaptureForm : Form
     private readonly Button chooseProcess = new() { Text = "Choose...", AutoSize = true };
     private readonly Button refresh = new() { Text = "Refresh", AutoSize = true };
     private readonly Button start = new() { Text = "Start", AutoSize = true };
-    private readonly Button autoCapture = new() { Text = "Auto Capture", AutoSize = true };
     private readonly Button stop = new() { Text = "Stop", AutoSize = true, Enabled = false };
     private readonly Button clear = new() { Text = "Clear", AutoSize = true };
-    private readonly Button clearIeCache = new() { Text = "Clear IE Cache", AutoSize = true };
     private readonly Button export = new() { Text = "Export JSONL", AutoSize = true, Enabled = false };
     private readonly Label state = new() { Text = "Ready", AutoSize = true, ForeColor = Color.FromArgb(23, 97, 68) };
     private readonly Label counter = new() { Text = "0 sessions / 0 events", AutoSize = true };
@@ -90,9 +88,6 @@ internal sealed class CaptureForm : Form
     private bool stopping;
     private bool closePending;
     private bool refreshing;
-    private bool clearingIeCache;
-    private bool watchingForProcess;
-    private CancellationTokenSource? processWatchCancellation;
     private RequestEntry? shownEntry;
     private int shownRevision = -1;
     private DateTime captureStart;
@@ -129,23 +124,17 @@ internal sealed class CaptureForm : Form
         refreshMenuItem.Click += async (_, _) => await RefreshProcesses();
         var startMenuItem = new ToolStripMenuItem("Start Capture");
         startMenuItem.Click += async (_, _) => await StartCapture();
-        var autoCaptureMenuItem = new ToolStripMenuItem("Auto Capture New IE Process");
-        autoCaptureMenuItem.Click += async (_, _) => await ToggleProcessWatch();
         var stopMenuItem = new ToolStripMenuItem("Stop Capture");
         stopMenuItem.Click += (_, _) => StopCapture();
         var clearMenuItem = new ToolStripMenuItem("Clear Sessions");
         clearMenuItem.Click += (_, _) => ClearCapture();
-        var clearIeCacheMenuItem = new ToolStripMenuItem("Clear IE Cache...");
-        clearIeCacheMenuItem.Click += async (_, _) => await ClearInternetCache();
-        captureMenu.DropDownItems.AddRange(new ToolStripItem[] { refreshMenuItem, startMenuItem, autoCaptureMenuItem, stopMenuItem, new ToolStripSeparator(), clearMenuItem, clearIeCacheMenuItem });
+        captureMenu.DropDownItems.AddRange(new ToolStripItem[] { refreshMenuItem, startMenuItem, stopMenuItem, new ToolStripSeparator(), clearMenuItem });
         captureMenu.DropDownOpening += (_, _) =>
         {
             refreshMenuItem.Enabled = refresh.Enabled;
             startMenuItem.Enabled = start.Enabled;
-            autoCaptureMenuItem.Enabled = autoCapture.Enabled;
             stopMenuItem.Enabled = stop.Enabled;
             clearMenuItem.Enabled = clear.Enabled;
-            clearIeCacheMenuItem.Enabled = clearIeCache.Enabled;
         };
         var viewMenu = new ToolStripMenuItem("&View");
         var statisticsMenuItem = new ToolStripMenuItem("Statistics");
@@ -175,15 +164,12 @@ internal sealed class CaptureForm : Form
         targetBar.BackColor = Color.FromArgb(248, 249, 251);
         start.Text = "Start Capture";
         StyleCommandButton(start, Color.FromArgb(24, 115, 64));
-        StyleCommandButton(autoCapture, Color.FromArgb(24, 86, 140));
         StyleCommandButton(stop, Color.FromArgb(155, 48, 48));
         StyleCommandButton(chooseProcess);
         StyleCommandButton(refresh);
         StyleCommandButton(clear);
-        StyleCommandButton(clearIeCache);
         StyleCommandButton(export);
         targetBar.Controls.Add(start);
-        targetBar.Controls.Add(autoCapture);
         targetBar.Controls.Add(stop);
         targetBar.Controls.Add(Separator());
         targetBar.Controls.Add(Caption("Process / PID"));
@@ -192,7 +178,6 @@ internal sealed class CaptureForm : Form
         targetBar.Controls.Add(refresh);
         targetBar.Controls.Add(Separator());
         targetBar.Controls.Add(clear);
-        targetBar.Controls.Add(clearIeCache);
         targetBar.Controls.Add(export);
         layout.Controls.Add(targetBar, 0, 1);
 
@@ -281,15 +266,12 @@ internal sealed class CaptureForm : Form
         tips.SetToolTip(processes, "Select an IE candidate or enter the request process PID. Candidates do not identify tabs.");
         tips.SetToolTip(chooseProcess, "Open a table showing PID, architecture and detection details.");
         tips.SetToolTip(start, "Capture bodies until stopped. Events are saved locally. Use approved test traffic only.");
-        tips.SetToolTip(autoCapture, "Wait for a new IE-mode process, then attach and start capture automatically.");
         tips.SetToolTip(export, "Export all persisted events. Paths, custom headers and bodies may still contain sensitive data.");
         refresh.Click += async (_, _) => await RefreshProcesses();
         chooseProcess.Click += async (_, _) => await ChooseProcess();
         start.Click += async (_, _) => await StartCapture();
-        autoCapture.Click += async (_, _) => await ToggleProcessWatch();
         stop.Click += (_, _) => StopCapture();
         clear.Click += (_, _) => ClearCapture();
-        clearIeCache.Click += async (_, _) => await ClearInternetCache();
         export.Click += (_, _) => Export();
         grid.SelectionChanged += (_, _) => ShowDetails();
         processes.TextChanged += (_, _) => tips.SetToolTip(processes, processes.Text);
@@ -309,7 +291,6 @@ internal sealed class CaptureForm : Form
         };
         FormClosing += (_, eventArgs) =>
         {
-            processWatchCancellation?.Cancel();
             if (worker is not null)
             {
                 eventArgs.Cancel = true;
@@ -324,7 +305,6 @@ internal sealed class CaptureForm : Form
         };
         FormClosed += (_, _) =>
         {
-            processWatchCancellation?.Dispose();
             ClearImage(responseImage, responseImageState);
             timer.Dispose(); tips.Dispose(); journal?.Dispose();
             if (testMode && Directory.Exists(journalDirectory)) Directory.Delete(journalDirectory, true);
@@ -593,7 +573,7 @@ internal sealed class CaptureForm : Form
             var stdout = listing.StandardOutput.ReadToEndAsync();
             var stderr = listing.StandardError.ReadToEndAsync();
             await listing.WaitForExitAsync();
-            var previous = processes.Text.Split('|')[0].Trim();
+            var hadPrevious = TryGetProcessId(processes.Text, out var previous);
             processes.Items.Clear();
             foreach (var line in (await stdout).Split('\n'))
             {
@@ -601,7 +581,7 @@ internal sealed class CaptureForm : Form
                 if (fields.Length >= 3 && uint.TryParse(fields[0], out _))
                     processes.Items.Add(FormatProcessItem(fields));
             }
-            var match = processes.Items.Cast<string>().FirstOrDefault(item => item.StartsWith(previous + " |", StringComparison.Ordinal));
+            var match = processes.Items.Cast<string>().FirstOrDefault(item => hadPrevious && TryGetProcessId(item, out var candidateId) && candidateId == previous);
             if (match is not null) processes.SelectedItem = match;
             else if (processes.Items.Count == 1) processes.SelectedIndex = 0;
             else { processes.SelectedIndex = -1; processes.Text = ""; }
@@ -620,7 +600,7 @@ internal sealed class CaptureForm : Form
 
     private async Task ChooseProcess()
     {
-        if (worker is not null || refreshing || clearingIeCache || watchingForProcess) return;
+        if (worker is not null || refreshing) return;
         refreshing = true;
         processes.Enabled = chooseProcess.Enabled = refresh.Enabled = start.Enabled = false;
         state.Text = "Finding processes...";
@@ -630,7 +610,7 @@ internal sealed class CaptureForm : Form
             if (candidates.Count == 0)
             {
                 MessageBox.Show(this, "No IE-mode candidate processes were found.", "Choose process", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                state.Text = "No IE processes found. Open an IE-mode page or use Auto Capture.";
+                state.Text = "No IE processes found. Open an IE-mode page, then click Refresh.";
                 return;
             }
             if (ShowProcessChooser(candidates) is not { } selected) return;
@@ -701,10 +681,33 @@ internal sealed class CaptureForm : Form
             ? candidateGrid.SelectedRows[0].Tag as Program.IeCandidate : null;
     }
 
-    private static string ProcessDisplayText(Program.IeCandidate candidate) =>
-        !string.IsNullOrWhiteSpace(candidate.WindowTitle)
-            ? $"{candidate.ProcessId} | {candidate.WindowTitle}"
-            : $"{candidate.ProcessId} | {candidate.Name} | {candidate.Architecture}";
+    private static string ProcessDisplayText(Program.IeCandidate candidate)
+    {
+        var architecture = candidate.Architecture.ToLowerInvariant() switch
+        {
+            "x86" => "32bit",
+            "x64" => "64bit",
+            "arm" => "ARM 32bit",
+            "arm64" => "ARM64 64bit",
+            _ => "Unknown architecture"
+        };
+        var prefix = $"{candidate.ProcessId}\uFF08{candidate.Name} {architecture}\uFF09";
+        return string.IsNullOrWhiteSpace(candidate.WindowTitle) ? prefix : $"{prefix} | {candidate.WindowTitle}";
+    }
+
+    private static bool TryGetProcessId(string text, out uint processId)
+    {
+        processId = 0;
+        var prefix = text.Split('|', 2)[0].Trim();
+        var open = prefix.IndexOfAny(new[] { '(', '\uFF08' });
+        if (open >= 0)
+        {
+            var close = prefix[open] == '(' ? ')' : '\uFF09';
+            if (!prefix.EndsWith(close) || string.IsNullOrWhiteSpace(prefix[(open + 1)..^1])) return false;
+            prefix = prefix[..open].Trim();
+        }
+        return uint.TryParse(prefix, NumberStyles.None, CultureInfo.InvariantCulture, out processId) && processId != 0;
+    }
 
     private void ResizeProcessDropDown()
     {
@@ -735,7 +738,7 @@ internal sealed class CaptureForm : Form
     private async Task StartCapture()
     {
         if (worker is not null || refreshing) return;
-        if (!uint.TryParse(processes.Text.Split('|')[0].Trim(), out var processId) || processId == 0)
+        if (!TryGetProcessId(processes.Text, out var processId))
         {
             MessageBox.Show(this, "Select a candidate process or enter a valid PID.", "Target process", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
@@ -748,8 +751,10 @@ internal sealed class CaptureForm : Form
         captureStart = DateTime.UtcNow;
         try
         {
+            var captureCommand = CaptureCommand(processId);
             EnsureJournal();
-            worker = Process.Start(CaptureCommand(processId))
+            AppendLog($"Capture worker: {captureCommand.FileName}");
+            worker = Process.Start(captureCommand)
                 ?? throw new InvalidOperationException("Cannot launch capture worker.");
             SetCapturing(true);
             state.ForeColor = Color.FromArgb(23, 97, 68);
@@ -804,129 +809,23 @@ internal sealed class CaptureForm : Form
     }
 
     private static ProcessStartInfo CaptureCommand(uint processId) =>
-        Command("--worker", processId.ToString(CultureInfo.InvariantCulture), "--continuous");
+        CaptureCommand(processId, Program.GetProcessArchitecture(processId));
 
-    private async Task ToggleProcessWatch()
+    private static ProcessStartInfo CaptureCommand(uint processId, string targetArchitecture)
     {
-        if (watchingForProcess)
+        var currentArchitecture = System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture.ToString();
+        var path = WorkerRouting.SelectExecutable(AppContext.BaseDirectory, targetArchitecture, currentArchitecture, File.Exists);
+        var arguments = new[] { "--worker", processId.ToString(CultureInfo.InvariantCulture), "--continuous" };
+        if (path is null) return Command(arguments);
+        WorkerRouting.ValidateExecutable(path, targetArchitecture);
+        var info = new ProcessStartInfo(path)
         {
-            processWatchCancellation?.Cancel();
-            return;
-        }
-        if (worker is not null || refreshing || clearingIeCache) return;
-        using var cancellation = new CancellationTokenSource();
-        processWatchCancellation = cancellation;
-        var existing = Program.FindIeProcesses(false).Select(candidate => candidate.ProcessId).ToHashSet();
-        existing.UnionWith(Program.FindIeExecutableProcesses().Select(candidate => candidate.ProcessId));
-        SetWatchingForProcess(true);
-        state.ForeColor = Color.FromArgb(24, 86, 140);
-        state.Text = "Waiting for a new IE-mode process... Open the target page now.";
-        try
-        {
-            var candidate = await WaitForNewIeProcess(existing, cancellation.Token);
-            processes.Items.Clear();
-            processes.Items.Add(ProcessDisplayText(candidate));
-            processes.SelectedIndex = 0;
-            state.Text = $"Detected PID {candidate.ProcessId}; starting capture...";
-            SetWatchingForProcess(false);
-            await StartCapture();
-            return;
-        }
-        catch (OperationCanceledException)
-        {
-            state.ForeColor = Color.FromArgb(23, 97, 68);
-            state.Text = "Automatic process watch cancelled.";
-        }
-        catch (Exception error)
-        {
-            ReportError(error);
-        }
-        finally
-        {
-            if (ReferenceEquals(processWatchCancellation, cancellation)) processWatchCancellation = null;
-            if (worker is null) SetWatchingForProcess(false);
-        }
-    }
-
-    private static async Task<Program.IeCandidate> WaitForNewIeProcess(HashSet<uint> existing, CancellationToken cancellation)
-    {
-        var fallbackPoll = 0;
-        while (true)
-        {
-            await Task.Delay(20, cancellation).ConfigureAwait(false);
-            var candidate = Program.FindIeExecutableProcesses().FirstOrDefault(item => !existing.Contains(item.ProcessId));
-            if (candidate is not null) return candidate;
-            if (++fallbackPoll < 5) continue;
-            fallbackPoll = 0;
-            candidate = Program.FindIeProcesses(false).FirstOrDefault(item => !existing.Contains(item.ProcessId));
-            if (candidate is not null) return candidate;
-        }
-    }
-
-    private void SetWatchingForProcess(bool watching)
-    {
-        watchingForProcess = watching;
-        autoCapture.Text = watching ? "Cancel Auto" : "Auto Capture";
-        processes.Enabled = chooseProcess.Enabled = refresh.Enabled = start.Enabled = clear.Enabled = clearIeCache.Enabled = export.Enabled = !watching;
-        autoCapture.Enabled = worker is null;
-    }
-
-    private static ProcessStartInfo ClearInternetCacheCommand()
-    {
-        var info = new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "rundll32.exe"))
-        {
-            UseShellExecute = false,
-            CreateNoWindow = true
+            UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true,
+            RedirectStandardError = true, RedirectStandardInput = true,
+            StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8
         };
-        info.ArgumentList.Add("InetCpl.cpl,ClearMyTracksByProcess");
-        info.ArgumentList.Add("8");
+        foreach (var argument in arguments) info.ArgumentList.Add(argument);
         return info;
-    }
-
-    private async Task ClearInternetCache()
-    {
-        if (worker is not null || refreshing || clearingIeCache || watchingForProcess) return;
-        var browserRunning = IsBrowserRunning();
-        var browserWarning = browserRunning
-            ? "Microsoft Edge or Internet Explorer is still running and may retain validators in memory. Close all browser windows and background processes for a reliable reset.\r\n\r\n"
-            : "";
-        if (MessageBox.Show(this,
-            browserWarning + "Clear temporary Internet files for the current Windows user now?\r\n\r\nCookies, saved passwords and browsing history are not selected.",
-            "Clear IE cache", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
-        clearingIeCache = true;
-        processes.Enabled = chooseProcess.Enabled = refresh.Enabled = start.Enabled = clear.Enabled = clearIeCache.Enabled = false;
-        state.ForeColor = Color.FromArgb(75, 87, 100);
-        state.Text = "Clearing IE cache...";
-        try
-        {
-            using var process = Process.Start(ClearInternetCacheCommand())
-                ?? throw new InvalidOperationException("Windows cache cleanup could not be started.");
-            await process.WaitForExitAsync();
-            if (process.ExitCode != 0) throw new InvalidOperationException($"Windows cache cleanup exited with code {process.ExitCode}.");
-            state.ForeColor = Color.FromArgb(23, 97, 68);
-            state.Text = browserRunning ? "Disk cache cleared. Fully exit and reopen Edge/IE before capturing." : "IE cache cleared. Reopen the browser, start capture, then hard-refresh.";
-            AppendLog("Windows Internet cache cleanup completed for the current user.");
-        }
-        catch (Exception error)
-        {
-            ReportError(error);
-        }
-        finally
-        {
-            clearingIeCache = false;
-            processes.Enabled = chooseProcess.Enabled = refresh.Enabled = start.Enabled = clear.Enabled = clearIeCache.Enabled = true;
-        }
-    }
-
-    private static bool IsBrowserRunning()
-    {
-        foreach (var name in new[] { "iexplore", "msedge" })
-        {
-            var running = Process.GetProcessesByName(name);
-            try { if (running.Length != 0) return true; }
-            finally { foreach (var process in running) process.Dispose(); }
-        }
-        return false;
     }
 
     private void StopCapture()
@@ -1560,7 +1459,7 @@ internal sealed class CaptureForm : Form
 
     private void SetCapturing(bool capturing)
     {
-        processes.Enabled = chooseProcess.Enabled = refresh.Enabled = start.Enabled = autoCapture.Enabled = clear.Enabled = clearIeCache.Enabled = !capturing;
+        processes.Enabled = chooseProcess.Enabled = refresh.Enabled = start.Enabled = clear.Enabled = !capturing;
         stop.Enabled = capturing;
         export.Enabled = !capturing && journal?.Count > 0;
     }
@@ -1607,33 +1506,53 @@ internal sealed class CaptureForm : Form
         SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
         if (!IsNativeAccessViolation(unchecked((int)0xC0000005)) || IsNativeAccessViolation(1))
             throw new InvalidOperationException("Native access-violation exit classification failed.");
-        if (FormatProcessItem(new[] { "19612", "iexplore", "x86", "candidate", "\u7f51\u6613 - Internet Explorer - https://www.163.com/" })
-            != "19612 | \u7f51\u6613 - Internet Explorer - https://www.163.com/"
-            || FormatProcessItem(new[] { "123", "iexplore", "x86", "candidate", "" }) != "123 | iexplore | x86"
-            || FormatProcessItem(new[] { "123", "iexplore", "x64", "candidate" }) != "123 | iexplore | x64")
+        if (FormatProcessItem(new[] { "19612", "iexplore", "x86", "candidate", IeWindowTitles.FormatTitle("https://www.163.com/ - \u7f51\u6613 - Internet Explorer") })
+            != "19612\uFF08iexplore 32bit\uFF09 | \u7f51\u6613 - https://www.163.com/"
+            || FormatProcessItem(new[] { "123", "iexplore", "x86", "candidate", "" }) != "123\uFF08iexplore 32bit\uFF09"
+            || FormatProcessItem(new[] { "123", "iexplore", "x64", "candidate" }) != "123\uFF08iexplore 64bit\uFF09")
             throw new InvalidOperationException("Process display title/fallback failed.");
-        var command = CaptureCommand(123);
+        WorkerRouting.SelfTest();
+        var command = CaptureCommand(123, System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture.ToString());
         if (!command.ArgumentList.TakeLast(3).SequenceEqual(new[] { "--worker", "123", "--continuous" }))
             throw new InvalidOperationException("UI must start continuous body capture.");
-        var cacheCommand = ClearInternetCacheCommand();
-        if (!Path.GetFileName(cacheCommand.FileName).Equals("rundll32.exe", StringComparison.OrdinalIgnoreCase)
-            || !cacheCommand.ArgumentList.SequenceEqual(new[] { "InetCpl.cpl,ClearMyTracksByProcess", "8" }))
-            throw new InvalidOperationException("IE cache cleanup must only clear temporary Internet files.");
+        var bundledX86 = Path.Combine(AppContext.BaseDirectory, "workers", "x86", "IENetworkInspector.exe");
+        if (System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture == System.Runtime.InteropServices.Architecture.X64
+            && File.Exists(bundledX86))
+        {
+            var routed = CaptureCommand(123, "x86");
+            if (routed.FileName != bundledX86 || routed.UseShellExecute || !routed.RedirectStandardInput
+                || !routed.RedirectStandardOutput || !routed.RedirectStandardError
+                || !routed.ArgumentList.SequenceEqual(new[] { "--worker", "123", "--continuous" }))
+                throw new InvalidOperationException("Bundled x86 worker routing/IPC contract failed.");
+            try { WorkerRouting.ValidateExecutable(bundledX86, "x64"); throw new InvalidOperationException("Wrong worker bitness accepted."); }
+            catch (BadImageFormatException) { }
+        }
         if (ProcessDisplayText(new Program.IeCandidate(123, "iexplore", "x86", "test"))
-            != "123 | iexplore | x86")
+            != "123\uFF08iexplore 32bit\uFF09")
             throw new InvalidOperationException("Process selector must display process architecture.");
-        var titled = new Program.IeCandidate(19612, "iexplore", "x86", "test", "Page - Internet Explorer - https://example.test/");
-        if (ProcessDisplayText(titled) != "19612 | Page - Internet Explorer - https://example.test/"
+        var titled = new Program.IeCandidate(19612, "iexplore", "x86", "test", "Page - https://example.test/");
+        if (ProcessDisplayText(titled) != "19612\uFF08iexplore 32bit\uFF09 | Page - https://example.test/"
             || titled.Architecture != "x86")
             throw new InvalidOperationException("Window title display must retain architecture metadata.");
+        foreach (var input in new[] { "19612", " 19612 ", "19612 | old title", "19612(iexplore 32bit) | Page", ProcessDisplayText(titled) })
+            if (!TryGetProcessId(input, out var parsed) || parsed != 19612)
+                throw new InvalidOperationException("Process ID parsing failed for a supported display format.");
+        foreach (var invalid in new[] { "", "0", "-1", "19612oops", "19612(iexplore", "19612()", "4294967296" })
+            if (TryGetProcessId(invalid, out _)) throw new InvalidOperationException("Invalid process ID accepted.");
+        foreach (var architecture in new[] { "x86", "x64", "ARM", "ARM64", "Unknown" })
+        {
+            var display = ProcessDisplayText(new Program.IeCandidate(123, "iexplore", architecture, "test"));
+            if (!TryGetProcessId(display, out var parsed) || parsed != 123)
+                throw new InvalidOperationException("Architecture fallback PID parsing failed.");
+        }
         using var form = new CaptureForm(true);
         form.Show();
         Application.DoEvents();
-        form.processes.Items.Add("123 | iexplore | x86");
+        form.processes.Items.Add(ProcessDisplayText(new Program.IeCandidate(123, "iexplore", "x86", "test")));
         form.ResizeProcessDropDown();
         if (form.processes.DropDownWidth != form.processes.Width)
             throw new InvalidOperationException("Short process entries should not widen the drop-down popup.");
-        form.processes.Items.Add($"456 | iexplore | x64 | {new string('W', 160)}");
+        form.processes.Items.Add(ProcessDisplayText(new Program.IeCandidate(456, "iexplore", "x64", "test", new string('W', 160))));
         form.ResizeProcessDropDown();
         if (form.processes.DropDownWidth <= form.processes.Width
             || form.processes.DropDownWidth > Screen.FromControl(form).WorkingArea.Width - 32)
@@ -1671,8 +1590,8 @@ internal sealed class CaptureForm : Form
             throw new InvalidOperationException($"Status filter does not fit its longest item: actual={form.statusFilter.Width}, expected={expectedStatusWidth}.");
         if (Descendants(form).Any(control => control is NumericUpDown or CheckBox))
             throw new InvalidOperationException("Removed capture options are still visible.");
-        if (form.chooseProcess.Parent != form.processes.Parent || form.autoCapture.Parent != form.processes.Parent || form.clear.Parent != form.processes.Parent
-            || form.clearIeCache.Parent != form.processes.Parent || form.export.Parent != form.processes.Parent
+        if (form.chooseProcess.Parent != form.processes.Parent || form.clear.Parent != form.processes.Parent
+            || form.export.Parent != form.processes.Parent
             || Descendants(form).Any(control => control.Text == "Open capture directory"))
             throw new InvalidOperationException("Capture actions must share the process toolbar without a folder button.");
         form.AddRecord("""{"kind":"body","activityId":"sample","direction":"request","encoding":"base64","bytes":11,"truncated":false,"streamEnded":true,"data":"eyJvayI6dHJ1ZX0="}""");
@@ -1785,7 +1704,7 @@ internal sealed class CaptureForm : Form
             bitmap.Save(Path.Combine(directory, $"ui-test-{size.Width}.png"));
         }
         form.SetCapturing(true);
-        if (form.start.Enabled || form.chooseProcess.Enabled || form.autoCapture.Enabled || !form.stop.Enabled || form.clearIeCache.Enabled || form.export.Enabled)
+        if (form.start.Enabled || form.chooseProcess.Enabled || !form.stop.Enabled || form.export.Enabled)
             throw new InvalidOperationException("Capture control state test failed.");
         form.SetCapturing(false);
         var bodyChunk = Convert.ToBase64String(Encoding.UTF8.GetBytes(new string('a', 32768)));
