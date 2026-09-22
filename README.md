@@ -16,15 +16,19 @@ proxy, service, certificate, or browser extension.
 
 ## Download
 
-Download the [latest release](https://github.com/ylq-cg/IENetWorkInspector/releases/latest):
+For cross-machine validation, use the **v0.5.0 unified preview** on the
+[Releases page](https://github.com/ylq-cg/IENetWorkInspector/releases).
 
-- Use the **win-x64** package for an x64 IE-mode process.
-- Use the **win-x86** package for an x86 IE-mode process.
-- Extract the archive to a writable directory and run `IENetworkInspector.exe`.
+- On Windows x64, extract the entire unified ZIP to a writable directory.
+- Run the top-level `IENetworkInspector.exe`; it selects x86/x64 capture workers
+  automatically. Keep the `workers` subfolder with the application.
+- Older architecture-specific packages still require matching the target
+  process architecture. The unified package is not a native ARM64 or 32-bit
+  Windows package.
 
-The current source also supports a unified x64 desktop package with an embedded
-x86 capture worker. Build it with `Build-Unified.cmd` as described below. Existing
-architecture-specific release downloads are not retroactively updated.
+The previous stable release remains available through
+[latest release](https://github.com/ylq-cg/IENetWorkInspector/releases/latest).
+Build the unified package from source with `Build-Unified.cmd` as described below.
 
 The release packages are self-contained and do not require a separate .NET
 installation. Windows displays a UAC prompt because process diagnostics require
