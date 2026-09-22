@@ -599,7 +599,7 @@ internal sealed class CaptureForm : Form
             {
                 var fields = line.Trim().Split('\t');
                 if (fields.Length >= 3 && uint.TryParse(fields[0], out _))
-                    processes.Items.Add($"{fields[0]} | {fields[1]} | {fields[2]}");
+                    processes.Items.Add(FormatProcessItem(fields));
             }
             var match = processes.Items.Cast<string>().FirstOrDefault(item => item.StartsWith(previous + " |", StringComparison.Ordinal));
             if (match is not null) processes.SelectedItem = match;
@@ -669,10 +669,11 @@ internal sealed class CaptureForm : Form
         candidateGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = "pid", HeaderText = "PID", Width = 85 });
         candidateGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = "process", HeaderText = "Process", Width = 110 });
         candidateGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = "arch", HeaderText = "Arch", Width = 75 });
-        candidateGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = "detection", HeaderText = "Detection", MinimumWidth = 270, AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill });
+        candidateGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = "title", HeaderText = "Page title / URL", MinimumWidth = 250, AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill });
+        candidateGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = "detection", HeaderText = "Detection", Width = 230 });
         foreach (var candidate in candidates)
         {
-            var rowIndex = candidateGrid.Rows.Add(candidate.ProcessId, candidate.Name, candidate.Architecture, candidate.Reason);
+            var rowIndex = candidateGrid.Rows.Add(candidate.ProcessId, candidate.Name, candidate.Architecture, candidate.WindowTitle, candidate.Reason);
             candidateGrid.Rows[rowIndex].Tag = candidate;
         }
         if (candidateGrid.Rows.Count != 0) candidateGrid.Rows[0].Selected = true;
@@ -701,7 +702,9 @@ internal sealed class CaptureForm : Form
     }
 
     private static string ProcessDisplayText(Program.IeCandidate candidate) =>
-        $"{candidate.ProcessId} | {candidate.Name} | {candidate.Architecture}";
+        !string.IsNullOrWhiteSpace(candidate.WindowTitle)
+            ? $"{candidate.ProcessId} | {candidate.WindowTitle}"
+            : $"{candidate.ProcessId} | {candidate.Name} | {candidate.Architecture}";
 
     private void ResizeProcessDropDown()
     {
@@ -789,6 +792,10 @@ internal sealed class CaptureForm : Form
             if (closePending) Close();
         }
     }
+
+    private static string FormatProcessItem(string[] fields) => ProcessDisplayText(new Program.IeCandidate(
+        uint.Parse(fields[0], CultureInfo.InvariantCulture), fields[1], fields[2], fields.Length >= 4 ? fields[3] : "",
+        fields.Length >= 5 ? fields[4] : ""));
 
     private static async Task Pump(StreamReader reader, bool isError, ChannelWriter<(bool, string)> writer)
     {
@@ -1600,6 +1607,11 @@ internal sealed class CaptureForm : Form
         SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
         if (!IsNativeAccessViolation(unchecked((int)0xC0000005)) || IsNativeAccessViolation(1))
             throw new InvalidOperationException("Native access-violation exit classification failed.");
+        if (FormatProcessItem(new[] { "19612", "iexplore", "x86", "candidate", "\u7f51\u6613 - Internet Explorer - https://www.163.com/" })
+            != "19612 | \u7f51\u6613 - Internet Explorer - https://www.163.com/"
+            || FormatProcessItem(new[] { "123", "iexplore", "x86", "candidate", "" }) != "123 | iexplore | x86"
+            || FormatProcessItem(new[] { "123", "iexplore", "x64", "candidate" }) != "123 | iexplore | x64")
+            throw new InvalidOperationException("Process display title/fallback failed.");
         var command = CaptureCommand(123);
         if (!command.ArgumentList.TakeLast(3).SequenceEqual(new[] { "--worker", "123", "--continuous" }))
             throw new InvalidOperationException("UI must start continuous body capture.");
@@ -1610,6 +1622,10 @@ internal sealed class CaptureForm : Form
         if (ProcessDisplayText(new Program.IeCandidate(123, "iexplore", "x86", "test"))
             != "123 | iexplore | x86")
             throw new InvalidOperationException("Process selector must display process architecture.");
+        var titled = new Program.IeCandidate(19612, "iexplore", "x86", "test", "Page - Internet Explorer - https://example.test/");
+        if (ProcessDisplayText(titled) != "19612 | Page - Internet Explorer - https://example.test/"
+            || titled.Architecture != "x86")
+            throw new InvalidOperationException("Window title display must retain architecture metadata.");
         using var form = new CaptureForm(true);
         form.Show();
         Application.DoEvents();

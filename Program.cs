@@ -17,6 +17,7 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        Console.OutputEncoding = new System.Text.UTF8Encoding(false);
         if (args.SequenceEqual(new[] { "--ui-self-test" }))
         {
             ApplicationConfiguration.Initialize();
@@ -265,18 +266,30 @@ internal static class Program
         }
         if (reportSkipped && skipped != 0)
             Console.Error.WriteLine($"Skipped {skipped} inaccessible/exited process inspections. Enumeration may be incomplete despite the administrator token.");
-        return candidates.OrderBy(candidate => candidate.ProcessId).ToList();
+        try
+        {
+            var titles = IeWindowTitles.Read();
+            candidates = candidates.Select(candidate => candidate with
+            {
+                WindowTitle = titles.GetValueOrDefault(candidate.ProcessId, "")
+            }).ToList();
+        }
+        catch (Exception error) when (error is System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            if (reportSkipped) Console.Error.WriteLine($"Window titles unavailable: 0x{error.HResult:X8}. Process/PID fallback retained.");
+        }
+        return candidates.OrderByDescending(candidate => candidate.WindowTitle.Length != 0).ThenBy(candidate => candidate.ProcessId).ToList();
     }
 
     private static void PrintCandidates(IReadOnlyList<IeCandidate> candidates, TextWriter output)
     {
-        output.WriteLine("PID\tPROCESS\tARCH\tDETECTION");
+        output.WriteLine("PID\tPROCESS\tARCH\tDETECTION\tWINDOW TITLE");
         foreach (var candidate in candidates)
-            output.WriteLine($"{candidate.ProcessId}\t{candidate.Name}\t{candidate.Architecture}\t{candidate.Reason}");
+            output.WriteLine($"{candidate.ProcessId}\t{candidate.Name}\t{candidate.Architecture}\t{candidate.Reason}\t{candidate.WindowTitle}");
         if (candidates.Count == 0)
             output.WriteLine("No IE candidates found. Open a page in Edge IE mode first. Module access or architecture restrictions can hide candidates; an explicit PID is still supported.");
         else
-            output.WriteLine("Candidates only, not tab identification or ETW access verification. No URLs or page content were inspected.");
+            output.WriteLine("Window titles are display hints and may contain URLs. Capture is process-wide, not tab-specific. No page content was inspected.");
     }
 
     private static async Task<int> Capture(ProcessDiagnosticInfo process, Options options, CancellationTokenSource cancellation)
@@ -489,11 +502,7 @@ internal static class Program
             try { ReadPayload(source, -1, cancelled.Token).GetAwaiter().GetResult(); throw new Exception("Body cancellation ignored."); }
             catch (OperationCanceledException) { }
         }
-        if (typeof(Program).Assembly.GetTypes().SelectMany(type => type.GetMethods(
-                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic
-                | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.DeclaredOnly))
-            .Any(method => (method.Attributes & System.Reflection.MethodAttributes.PinvokeImpl) != 0))
-            throw new Exception("Unexpected direct native import in demo assembly; review public API usage.");
+        IeWindowTitles.SelfTest();
         if (!IsBrowserCandidate("IEXPLORE") || !IsBrowserCandidate("msedge")
             || IsBrowserCandidate("msedgewebview2") || IsBrowserCandidate("notepad"))
             throw new Exception("Browser candidate filter test failed.");
@@ -523,7 +532,7 @@ internal static class Program
         Console.WriteLine("PASS: candidate filter, options, bounds, full headers and URL capture. No capture was started.");
     }
 
-    internal sealed record IeCandidate(uint ProcessId, string Name, string Architecture, string Reason);
+    internal sealed record IeCandidate(uint ProcessId, string Name, string Architecture, string Reason, string WindowTitle = "");
     private static async Task<(long Bytes, long Chunks)> StreamBody(Stream input, CancellationToken cancellation, Action<long, ReadOnlyMemory<byte>> emit)
     {
         var buffer = new byte[32768];

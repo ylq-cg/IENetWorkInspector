@@ -30,6 +30,7 @@ isolated HTML response preview and is normally installed with Microsoft Edge.
 ## Features
 
 - Finds IE-mode candidate processes and displays their x86/x64 architecture.
+- Shows available page titles and URLs in the process selector and **Choose...** dialog.
 - Supports manual process selection and **Auto Capture** for newly created IE
   processes.
 - Lists sessions by status code, method, protocol, host, URL, and timing.
@@ -58,6 +59,20 @@ isolated HTML response preview and is normally installed with Microsoft Edge.
 To reduce missed first-load requests, close Edge first, click **Auto Capture**,
 and then open the IE-mode page. Auto Capture reduces the attachment race but
 cannot guarantee that the first request is observed.
+
+On **Refresh** or **Choose...**, titled candidates appear as
+`PID | Page title - URL`. The tool associates an `Internet Explorer_Server`
+window's PID with the nearest titled `TabWindowClass` or `IEFrame` ancestor;
+the ancestor may belong to a different process. **Choose...** retains separate
+process architecture and detection columns. Multiple titles sharing one PID
+are combined into one candidate; capture remains process-wide, not tab-specific.
+
+Only the recognized `HTTP(S) URL - title` caption format is rearranged. Other
+captions remain unchanged, and inaccessible/missing titles fall back to the
+process name and architecture. Titles are display hints, not authoritative
+request URLs, and may contain sensitive information. Window class names and
+relationships are heuristics, not an official IE-mode tab discovery contract.
+Auto Capture's fast new-process path does not wait for a window title to appear.
 
 A session containing only a `completed` event means capture attached after that
 request started. Missing request, response, and body events cannot be recovered.
@@ -194,6 +209,15 @@ dotnet .\bin\IENetworkInspector\IENetworkInspector.dll --ui-self-test
 Alternatively, run `Open-UI.cmd`; it builds and starts the UI without keeping a
 console window open.
 
-The application uses public Windows/.NET APIs plus Microsoft WebView2. It has no
-handwritten native imports or hardcoded ETW provider identifiers. See the source
-and release notes for implementation details and validated package hashes.
+The application uses public Windows/.NET APIs plus Microsoft WebView2. Window
+title discovery in `IeWindowTitles.cs` uses only the documented `user32.dll`
+APIs [EnumWindows](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-enumwindows),
+[EnumChildWindows](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-enumchildwindows),
+[GetClassNameW](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getclassnamew),
+[GetWindowTextW](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getwindowtextw),
+[GetWindowThreadProcessId](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getwindowthreadprocessid)
+and [GetAncestor](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getancestor).
+The self-test restricts handwritten native imports to this allowlist and checks
+title formatting and cross-process window association. No private F12 interfaces
+or hardcoded ETW provider identifiers are used. See the source and release notes
+for implementation details and validated package hashes.
