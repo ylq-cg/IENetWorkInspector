@@ -35,13 +35,13 @@ internal static class Program
     {
         if (args.Length == 0 || args.Contains("--help"))
         {
-            Console.WriteLine("IeNetworkDemo <pid> [--seconds 30] [--body-bytes 0]\n" +
-                "IeNetworkDemo --ui (also the default with no arguments)\n" +
-                "IeNetworkDemo --list\n" +
-                "IeNetworkDemo --diagnose\n" +
-                "IeNetworkDemo --probe-http-self\n" +
-                "IeNetworkDemo --auto [--seconds 30] [--body-bytes 0]\n" +
-                "IeNetworkDemo --self-test\n" +
+            Console.WriteLine("IENetworkInspector <pid> [--seconds 30] [--body-bytes 0]\n" +
+                "IENetworkInspector --ui (also the default with no arguments)\n" +
+                "IENetworkInspector --list\n" +
+                "IENetworkInspector --diagnose\n" +
+                "IENetworkInspector --probe-http-self\n" +
+                "IENetworkInspector --auto [--seconds 30] [--body-bytes 0]\n" +
+                "IENetworkInspector --self-test\n" +
                 "JSON Lines to stdout; status to stderr. Ctrl+C stops capture.\n" +
                 "Limits: 1-300 seconds, 0-65536 bytes/body, 8 body readers, 2000 events.\n" +
                 "Bodies are opt-in. Only use approved test traffic; output may contain sensitive data.");
@@ -109,6 +109,12 @@ internal static class Program
             }
             var options = Parse(args);
             PrintDiagnostics(Console.Error);
+            var targetArchitecture = GetProcessArchitecture(options.ProcessId);
+            var providerArchitecture = System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture.ToString();
+            Console.Error.WriteLine($"Target process: PID {options.ProcessId}; architecture={targetArchitecture}; provider architecture={providerArchitecture}.");
+            if (!targetArchitecture.Equals("Unknown", StringComparison.OrdinalIgnoreCase)
+                && !targetArchitecture.Equals(providerArchitecture, StringComparison.OrdinalIgnoreCase))
+                throw new PlatformNotSupportedException($"Target process architecture {targetArchitecture} does not match provider architecture {providerArchitecture}. Cross-architecture HttpDiagnosticProvider.Start is blocked because it can terminate the worker in native code. Use the matching x86/x64 build.");
             if (!ApiInformation.IsTypePresent("Windows.Web.Http.Diagnostics.HttpDiagnosticProvider"))
                 throw new InvalidOperationException("HttpDiagnosticProvider is not available on this OS.");
             var process = ProcessDiagnosticInfo.GetForProcesses()
@@ -161,7 +167,7 @@ internal static class Program
     private static void PrintDiagnostics(TextWriter? output = null)
     {
         output ??= Console.Out;
-        output.WriteLine($"Demo build: metadata-v2; assembly={typeof(Program).Assembly.Location}; module={typeof(Program).Assembly.ManifestModule.ModuleVersionId}");
+        output.WriteLine($"Inspector build: metadata-v2; assembly={typeof(Program).Assembly.Location}; module={typeof(Program).Assembly.ManifestModule.ModuleVersionId}");
         using var identity = WindowsIdentity.GetCurrent();
         var principal = new WindowsPrincipal(identity);
         output.WriteLine($"OS: {System.Runtime.InteropServices.RuntimeInformation.OSDescription}");
@@ -209,6 +215,20 @@ internal static class Program
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException
             or System.ComponentModel.Win32Exception or InvalidOperationException or BadImageFormatException)
+        {
+            return "Unknown";
+        }
+    }
+
+    private static string GetProcessArchitecture(uint processId)
+    {
+        try
+        {
+            using var process = System.Diagnostics.Process.GetProcessById(checked((int)processId));
+            return ProcessArchitecture(process);
+        }
+        catch (Exception error) when (error is ArgumentException or InvalidOperationException
+            or System.ComponentModel.Win32Exception or OverflowException)
         {
             return "Unknown";
         }

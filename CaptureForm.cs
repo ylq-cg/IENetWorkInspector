@@ -11,6 +11,7 @@ using Microsoft.Web.WebView2.WinForms;
 
 internal sealed class CaptureForm : Form
 {
+    private const int NativeAccessViolationExitCode = unchecked((int)0xC0000005);
     private readonly ComboBox processes = new() { Width = 420, MaxDropDownItems = 24, DropDownStyle = ComboBoxStyle.DropDown };
     private readonly Button chooseProcess = new() { Text = "Choose...", AutoSize = true };
     private readonly Button refresh = new() { Text = "Refresh", AutoSize = true };
@@ -98,9 +99,9 @@ internal sealed class CaptureForm : Form
 
     public CaptureForm(bool testMode = false)
     {
-        journalDirectory = testMode ? Path.Combine(Path.GetTempPath(), "IeNetworkDemo-ui-test-" + Guid.NewGuid().ToString("N"))
-            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "IeNetworkDemo", "Captures");
-        webViewDataDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "IeNetworkDemo", "WebView2");
+        journalDirectory = testMode ? Path.Combine(Path.GetTempPath(), "IENetworkInspector-ui-test-" + Guid.NewGuid().ToString("N"))
+            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "IENetworkInspector", "Captures");
+        webViewDataDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "IENetworkInspector", "WebView2");
         Text = "IE Network Inspector";
         Font = new Font("Tahoma", 9F);
         ClientSize = new Size(1380, 860);
@@ -756,12 +757,18 @@ internal sealed class CaptureForm : Form
             await worker.WaitForExitAsync();
             await Task.WhenAll(outputTask, errorTask);
             DrainMessages(true);
+            var exitCode = worker.ExitCode;
+            var nativeAccessViolation = IsNativeAccessViolation(exitCode);
+            if (nativeAccessViolation)
+                AppendLog("The capture worker terminated with native access violation 0xC0000005 inside Windows HttpDiagnosticProvider.Start(). This is not a managed exception or a normal permission error. Compare the logged target/provider architectures, run an elevated --probe-http-self test, and retry with a matching architecture build. If self-probe also crashes, report the OS build to Microsoft.");
             state.Text = storageFailed ? "Disk write failed. Capture stopped; data may be incomplete. See Log."
-                : worker.ExitCode == 0 ? "Capture finished. Events saved to disk."
-                : worker.ExitCode == 2 ? "No events. Check the PID and reproduce a request."
+                : exitCode == 0 ? "Capture finished. Events saved to disk."
+                : exitCode == 2 ? "No events. Check the PID and reproduce a request."
+                : nativeAccessViolation ? "Windows HTTP diagnostics crashed (0xC0000005). See Log."
                 : "Capture failed. See Log for HRESULT and permissions.";
-            state.ForeColor = worker.ExitCode == 1 || storageFailed ? Color.Firebrick : Color.FromArgb(23, 97, 68);
-            if (worker.ExitCode == 1 || storageFailed) detailTabs.SelectedIndex = 2;
+            var failed = exitCode is not 0 and not 2;
+            state.ForeColor = failed || storageFailed ? Color.Firebrick : Color.FromArgb(23, 97, 68);
+            if (failed || storageFailed) detailTabs.SelectedIndex = 2;
         }
         catch (Exception error)
         {
@@ -1551,6 +1558,8 @@ internal sealed class CaptureForm : Form
         export.Enabled = !capturing && journal?.Count > 0;
     }
 
+    private static bool IsNativeAccessViolation(int exitCode) => exitCode == NativeAccessViolationExitCode;
+
     private void AppendLog(string text)
     {
         if (string.IsNullOrWhiteSpace(text)) return;
@@ -1589,6 +1598,8 @@ internal sealed class CaptureForm : Form
     internal static int RunSelfTest()
     {
         SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
+        if (!IsNativeAccessViolation(unchecked((int)0xC0000005)) || IsNativeAccessViolation(1))
+            throw new InvalidOperationException("Native access-violation exit classification failed.");
         var command = CaptureCommand(123);
         if (!command.ArgumentList.TakeLast(3).SequenceEqual(new[] { "--worker", "123", "--continuous" }))
             throw new InvalidOperationException("UI must start continuous body capture.");
@@ -1701,7 +1712,7 @@ internal sealed class CaptureForm : Form
         form.requests["image-sample"].Row.Selected = true;
         form.ShowDetails();
         if (form.responseImage.Image?.Size != new Size(2, 2) || !form.responseImageState.Text.Contains("image/png"))
-            throw new InvalidOperationException("ImageView failed to decode the captured response body.");
+            throw new InvalidOperationException("Preview failed to decode the captured response image.");
         var html = "<!doctype html><html><body><h1>Captured preview</h1><script>window.externalCall=true</script></body></html>";
         form.AddRecord(JsonSerializer.Serialize(new { kind = "body", activityId = "html-sample", direction = "response", encoding = "base64", bytes = Encoding.UTF8.GetByteCount(html), truncated = false, streamEnded = true, data = Convert.ToBase64String(Encoding.UTF8.GetBytes(html)) }));
         form.AddRecord("""{"kind":"response","activityId":"html-sample","timestamp":"2026-09-17T09:00:04Z","status":200,"headers":{},"contentHeaders":{"Content-Type":"text/html; charset=utf-8"}}""");
@@ -1787,7 +1798,7 @@ internal sealed class CaptureForm : Form
         if (form.grid.Rows.Count != 0 || form.export.Enabled || form.requestHeadersGrid.Rows.Count != 0)
             throw new InvalidOperationException("Clear state test failed.");
         form.Close();
-        Console.WriteLine("PASS: UI, ImageView/WebView2, body chunk preview, cache eviction, complete disk export, retained journals and viewport snapshots. No capture started.");
+        Console.WriteLine("PASS: UI, response Preview, body formats, cache eviction, complete disk export, retained journals and viewport snapshots. No capture started.");
         return 0;
     }
 }

@@ -65,7 +65,7 @@ internal sealed class CaptureJournal : IDisposable
 
     public static void SelfTest()
     {
-        var directory = Path.Combine(Path.GetTempPath(), "IeNetworkDemo-test-" + Guid.NewGuid().ToString("N"));
+        var directory = Path.Combine(Path.GetTempPath(), "IENetworkInspector-test-" + Guid.NewGuid().ToString("N"));
         try
         {
             string path;

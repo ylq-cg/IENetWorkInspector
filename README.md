@@ -16,26 +16,32 @@ project is not affiliated with Fiddler or its publisher.
 > authorized to inspect. URLs and HTTP headers are stored without redaction,
 > including cookies, authorization values, query strings and other secrets.
 
+![IE Network Inspector desktop interface](docs/images/ie-network-inspector.png)
+
 ## Features
 
-- Enumerate IE candidate processes or enter a target PID manually.
-- Show each candidate process's executable architecture (`x86`, `x64`, ARM).
-- Inspect sessions by method, host, URL, status, content type and request timing.
-- Separate request and response Headers, Body and JSON views.
+- Enumerate IE-mode candidate processes, show their architecture, or accept a PID.
+- Automatically attach when a new IE process appears, reducing first-load loss.
+- Inspect sessions by status code, method, protocol, host, URL and timing.
+- Use structured Request views for Headers, Params, Cookies, Raw, Body and Auth.
+- Use structured Response views for Headers, Cookies, Raw, Preview and Body.
+- Preview captured images or isolated HTML; inspect text, JSON, HEX, XML,
+  JavaScript and request form data.
 - Filter cached sessions by text, status class, or missing responses.
 - Capture until manually stopped, with streamed body chunks and bounded previews.
 - Persist every received event locally and export the full journal, including
   records evicted from the live grid.
-- Inspect effective permissions and test HTTP API startup from the command line.
+- Clear the current user's IE cache without selecting cookies, history or passwords.
+- Diagnose permissions, architecture mismatches and native provider startup crashes.
 
 ## Requirements
 
 - Windows 10 version 2004 (build 19041) or later, or Windows 11, with the HTTP
   diagnostics API available. The project targets `net9.0-windows10.0.19041.0`;
   this target is not a claim that every Windows release has been tested.
-- [.NET 9 SDK](https://dotnet.microsoft.com/download/dotnet/9.0) to build and use
-  the launch script; the .NET 9 Windows Desktop Runtime to run a built application.
-  .NET 9 is an older runtime target; review its support lifecycle before deployment.
+- The downloadable x64/x86 packages are self-contained and do not require a
+  separate .NET installation. Building from source requires the
+  [.NET 9 SDK](https://dotnet.microsoft.com/download/dotnet/9.0).
 - Microsoft Edge WebView2 Runtime for the isolated captured-HTML preview. It is
   normally installed with Microsoft Edge on supported Windows systems.
 - An existing IE-mode test page and access to the process that issues its requests.
@@ -46,7 +52,12 @@ project is not affiliated with Fiddler or its publisher.
 
 ## Quick start
 
-Clone the repository and launch from Command Prompt:
+Download the [latest release](https://github.com/ylq-cg/IENetWorkInspector/releases/latest),
+choose the x64 or x86 package that matches the target IE process architecture,
+extract it to a writable directory, and run `IENetworkInspector.exe`. Windows
+requests administrator approval before the application opens.
+
+To build from source, clone the repository and launch from Command Prompt:
 
 ```cmd
 git clone https://github.com/ylq-cg/IENetWorkInspector.git
@@ -54,10 +65,9 @@ cd IENetWorkInspector
 Open-UI.cmd
 ```
 
-The script builds the project and starts the newly built UI without keeping a
-console window open. Windows requests administrator approval before the
-application opens. If a previous instance locks the output files, save your
-results and close it before retrying.
+The script builds into `bin\IENetworkInspector` and starts
+`IENetworkInspector.exe` without keeping a console window open. If a previous
+instance locks the output files, save your results and close it before retrying.
 
 1. For an existing IE-mode page, click **Refresh**, select its process, then
   click **Start Capture**. For a browser that is not open yet, click
@@ -137,12 +147,12 @@ system-source libraries, or a Visual Studio collector installation.
 | Process listing and worker | `Process.GetProcesses`, `ProcessName`, `Id`, `Modules`, `ProcessModule.ModuleName`, `Process.Start`, redirected streams, `WaitForExitAsync` | [Process](https://learn.microsoft.com/en-us/dotnet/api/system.diagnostics.process), [Modules](https://learn.microsoft.com/en-us/dotnet/api/system.diagnostics.process.modules) |
 | Permission diagnostics | `WindowsIdentity.GetCurrent`, `WindowsPrincipal.IsInRole`, `SecurityIdentifier`; documented Performance Log Users SID | [WindowsPrincipal](https://learn.microsoft.com/en-us/dotnet/api/system.security.principal.windowsprincipal), [well-known SIDs](https://learn.microsoft.com/en-us/windows/win32/secauthz/well-known-sids) |
 | Desktop and persistence | Public WinForms controls/dialogs, System.Drawing, System.IO, System.Text.Json, Channels, Tasks and cancellation APIs | [.NET API reference](https://learn.microsoft.com/en-us/dotnet/api/), [WinForms](https://learn.microsoft.com/en-us/dotnet/desktop/winforms/) |
-| Build diagnostics | Public reflection over this demo's own assembly, path and module ID | [Assembly](https://learn.microsoft.com/en-us/dotnet/api/system.reflection.assembly) |
+| Build diagnostics | Public reflection over this inspector's own assembly, path and module ID | [Assembly](https://learn.microsoft.com/en-us/dotnet/api/system.reflection.assembly) |
 
 `HttpDiagnosticsContract` is a documented Windows Desktop Extension SDK contract
 (version 1, introduced in Windows 10). Its `Windows.*` namespace does not make
 it a private OS interface. The framework's WinRT projection and the Windows
-implementation may perform native/COM/ETW work internally; the demo consumes
+implementation may perform native/COM/ETW work internally; the inspector consumes
 the public contract rather than those implementation details.
 
 There are no handwritten P/Invoke declarations or hardcoded system ETW provider
@@ -166,7 +176,8 @@ cd IENetWorkInspector
 Open-UI.cmd
 ```
 
-The launcher builds into `bin\RequestMetadata` and opens that exact executable.
+The launcher builds into `bin\IENetworkInspector` and opens
+`IENetworkInspector.exe` from that directory.
 Each capture logs its assembly path and module ID for troubleshooting. If the
 output is locked, the launcher stops after the build error instead of silently
 starting a stale version. Save and close that window first.
@@ -259,8 +270,11 @@ This does not guarantee complete capture or reliable 24x7 monitoring.
 Every UI event is appended to a unique UTF-8 JSONL journal under:
 
 ```text
-%LOCALAPPDATA%\IeNetworkDemo\Captures
+%LOCALAPPDATA%\IENetworkInspector\Captures
 ```
+
+Versions before `v0.4.0` used `%LOCALAPPDATA%\IeNetworkDemo\Captures`; existing
+journals remain there and are not moved automatically.
 
 Clear, Clear IE Cache and Export are on the process-selection toolbar; there is
 no directory button. Open the path above in File Explorer to access journals. Files are flushed
@@ -286,7 +300,7 @@ destination only after copying completes, and rejects the active journal as a
 destination. Monitor free space and manually delete retired journals after
 closing their capture. No disk quota or automatic retention policy is imposed.
 
-Journals are NOT encrypted by the demo and may include credentials, personal
+Journals are NOT encrypted by the inspector and may include credentials, personal
 information or business content. The directory inherits the current user's
 local-app-data permissions; protect the files and apply an approved retention
 policy. Persistence happens automatically, not only when Export is clicked.
@@ -342,7 +356,7 @@ request elevation but do not change security policy. If the role is enabled but 
 the exact denied operation needs tracing; the HRESULT alone does not identify it.
 
 To distinguish API startup failures from target-specific issues, test the
-public HTTP API against only the demo process in the same terminal:
+public HTTP API against only the inspector process in the same terminal:
 
 ```powershell
 dotnet run -- --probe-http-self
@@ -353,6 +367,17 @@ then Stop if Start succeeds, without event subscriptions or HTTP requests.
 It is an active API/session test, not just a read-only token query. Success does
 not prove IE capture works; failure shows the problem also occurs without an IE
 target. Keep the token and OS version consistent when comparing probe results.
+
+If the worker terminates with `Fatal error. 0xC0000005` in
+`HttpDiagnosticProvider.Start`, the Windows diagnostics provider crashed in
+native code before capture began; ordinary .NET exception handling cannot catch
+that failure. The UI isolates capture in a worker process and reports this exit
+code in the Log. Compare the logged target and provider architectures first.
+Cross-architecture behavior is not documented for this API, so retry with a
+matching x86/x64 build if they differ. If the architectures match, run
+`--probe-http-self` from an elevated terminal. A self-probe crash is independent
+of the target PID and should be reported with the exact Windows build; a
+successful self-probe points instead to the selected target or its architecture.
 
 ## Capture approved test traffic
 
@@ -389,7 +414,7 @@ filter: other traffic in the same process may also be captured. Replace `1234`:
 dotnet run -- 1234 --seconds 30 > capture.jsonl
 ```
 
-Start the demo before reproducing requests. Ctrl+C stops early. The CLI default is
+Start the inspector before reproducing requests. Ctrl+C stops early. The CLI default is
 30 seconds, with bodies disabled. For controlled, non-sensitive GET/POST tests:
 
 ```powershell
@@ -419,7 +444,7 @@ duration/size limit, use `dotnet run -- 1234 --continuous`.
   to journals and exports. Only use approved test traffic, protect exports and
   follow your retention policy.
 - Access denied after elevation requires administrator review of
-  ETW/process/provider permissions. The demo does not change group membership.
+  ETW/process/provider permissions. The inspector does not change group membership.
 - A successful Start call does not prove event delivery or complete PID filtering.
   Validate against known server-side GET/POST records. No automatic reattachment,
   historical backfill, cross-process correlation or non-WinINet coverage is promised.
