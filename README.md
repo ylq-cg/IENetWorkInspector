@@ -1,476 +1,199 @@
 # IE Network Inspector
 
-A Windows desktop tool for investigating HTTP traffic from Internet Explorer
-mode processes using the public `Windows.Web.Http.Diagnostics.HttpDiagnosticProvider`
-API. It includes a session list, request/response inspectors, filtering, automatic
-local persistence, JSONL export, and a command-line interface.
+IE Network Inspector is a Windows desktop tool for capturing and inspecting HTTP
+traffic from Microsoft Edge Internet Explorer mode processes. It uses the public
+`Windows.Web.Http.Diagnostics.HttpDiagnosticProvider` API and does not install a
+proxy, service, certificate, or browser extension.
 
-This is an experimental, independent tool, not an official Microsoft product
-or a supported replacement for F12. It does not restore legacy F12 components,
-install a service, configure a proxy, trust certificates, or change security policy.
-The inspector layout is inspired by familiar network debugging tools; this
-project is not affiliated with Fiddler or its publisher.
+> **Experimental:** This is an independent diagnostic tool, not an official
+> Microsoft product or a supported replacement for IE F12 Developer Tools.
 
-> **Privacy:** The desktop UI captures available request/response bodies by
-> default and automatically writes events to disk. Use only traffic you are
-> authorized to inspect. URLs and HTTP headers are stored without redaction,
-> including cookies, authorization values, query strings and other secrets.
+> **Privacy:** Captured URLs, headers, cookies, authorization values, query
+> strings, and available request/response bodies are stored without redaction.
+> Use the tool only with traffic you are authorized to inspect.
 
 ![IE Network Inspector desktop interface](docs/images/ie-network-inspector.png)
 
+## Download
+
+Download the [latest release](https://github.com/ylq-cg/IENetWorkInspector/releases/latest):
+
+- Use the **win-x64** package for an x64 IE-mode process.
+- Use the **win-x86** package for an x86 IE-mode process.
+- Extract the archive to a writable directory and run `IENetworkInspector.exe`.
+
+The release packages are self-contained and do not require a separate .NET
+installation. Windows displays a UAC prompt because process diagnostics require
+an administrator token. Microsoft Edge WebView2 Runtime is required for the
+isolated HTML response preview and is normally installed with Microsoft Edge.
+
 ## Features
 
-- Enumerate IE-mode candidate processes, show their architecture, or accept a PID.
-- Automatically attach when a new IE process appears, reducing first-load loss.
-- Inspect sessions by status code, method, protocol, host, URL and timing.
-- Use structured Request views for Headers, Params, Cookies, Raw, Body and Auth.
-- Use structured Response views for Headers, Cookies, Raw, Preview and Body.
-- Preview captured images or isolated HTML; inspect text, JSON, HEX, XML,
-  JavaScript and request form data.
-- Filter cached sessions by text, status class, or missing responses.
-- Capture until manually stopped, with streamed body chunks and bounded previews.
-- Persist every received event locally and export the full journal, including
-  records evicted from the live grid.
-- Clear the current user's IE cache without selecting cookies, history or passwords.
-- Diagnose permissions, architecture mismatches and native provider startup crashes.
+- Finds IE-mode candidate processes and displays their x86/x64 architecture.
+- Supports manual process selection and **Auto Capture** for newly created IE
+  processes.
+- Lists sessions by status code, method, protocol, host, URL, and timing.
+- Filters sessions by URL, host, method, status, or content type.
+- Shows structured request Headers, Params, Cookies, Raw, Body, and Auth views.
+- Shows structured response Headers, Cookies, Raw, Preview, and Body views.
+- Formats captured Text, JSON, HEX, XML, JavaScript, and form data.
+- Previews supported images and renders captured HTML with scripts and external
+  requests disabled.
+- Captures available request/response bodies until stopped.
+- Saves every event to a local JSONL journal and exports the complete journal.
+- Clears temporary Internet files without selecting cookies, history, or saved
+  passwords.
+- Reports permission, architecture, and native provider startup failures.
 
-## Requirements
+## Capture Traffic
 
-- Windows 10 version 2004 (build 19041) or later, or Windows 11, with the HTTP
-  diagnostics API available. The project targets `net9.0-windows10.0.19041.0`;
-  this target is not a claim that every Windows release has been tested.
-- The downloadable x64/x86 packages are self-contained and do not require a
-  separate .NET installation. Building from source requires the
-  [.NET 9 SDK](https://dotnet.microsoft.com/download/dotnet/9.0).
-- Microsoft Edge WebView2 Runtime for the isolated captured-HTML preview. It is
-  normally installed with Microsoft Edge on supported Windows systems.
-- An existing IE-mode test page and access to the process that issues its requests.
-- Administrator approval at startup. The executable declares
-  `requireAdministrator`, so Windows displays a UAC prompt when the current
-  process is not elevated. Elevation alone does not guarantee access to every
-  process or provider.
+1. Start `IENetworkInspector.exe` and approve the UAC prompt.
+2. Open an existing Edge IE-mode page, click **Refresh**, and choose the process
+   whose architecture matches the application package.
+3. Click **Start Capture** and wait for **Capturing**.
+4. Reproduce or refresh the target page.
+5. Select a session to inspect its request, response, preview, and timing.
+6. Click **Stop**, then **Export JSONL** if the full journal is needed.
 
-## Quick start
+To reduce missed first-load requests, close Edge first, click **Auto Capture**,
+and then open the IE-mode page. Auto Capture reduces the attachment race but
+cannot guarantee that the first request is observed.
 
-Download the [latest release](https://github.com/ylq-cg/IENetWorkInspector/releases/latest),
-choose the x64 or x86 package that matches the target IE process architecture,
-extract it to a writable directory, and run `IENetworkInspector.exe`. Windows
-requests administrator approval before the application opens.
+A session containing only a `completed` event means capture attached after that
+request started. Missing request, response, and body events cannot be recovered.
 
-To build from source, clone the repository and launch from Command Prompt:
+## Inspector Views
 
-```cmd
-git clone https://github.com/ylq-cg/IENetWorkInspector.git
-cd IENetWorkInspector
-Open-UI.cmd
+Request views:
+
+- **Headers:** pseudo-headers and captured HTTP/content headers.
+- **Params:** decoded URL query parameters.
+- **Cookies:** parsed request cookies.
+- **Raw:** reconstructed metadata and captured body; not original wire bytes.
+- **Body:** Text, JSON, HEX, MessagePack, Protobuf, Form-Data, XML, and JavaScript.
+- **Auth:** captured authorization headers.
+
+Response views:
+
+- **Headers:** captured response and content headers.
+- **Cookies:** parsed `Set-Cookie` values and attributes.
+- **Raw:** reconstructed metadata and captured body.
+- **Preview:** supported images or isolated HTML.
+- **Body:** Text, JSON, HEX, MessagePack, Protobuf, XML, and JavaScript.
+
+MessagePack and Protobuf require format/schema knowledge not supplied by the
+Windows diagnostics API; these tabs explain the limitation when decoding is not
+available.
+
+## Cache and 304 Responses
+
+`304 Not Modified` responses intentionally have no response body. The browser
+uses its cached copy, which this process-scoped diagnostic stream cannot expose.
+The tool cannot convert a `304` into a `200` or modify request headers because
+`HttpDiagnosticProvider` is a passive diagnostics API.
+
+For a fresh response body:
+
+1. Close all Edge and Internet Explorer windows and background processes.
+2. Start IE Network Inspector and click **Clear IE Cache**.
+3. Click **Auto Capture**.
+4. Open the target IE-mode page and wait for **Capturing**.
+5. Navigate or hard-refresh with `Ctrl+F5`.
+
+For browser-controlled cache disabling, open the IE-mode page and run:
+
+```text
+C:\Windows\System32\F12\IEChooser.exe
 ```
 
-The script builds into `bin\IENetworkInspector` and starts
-`IENetworkInspector.exe` without keeping a console window open. If a previous
-instance locks the output files, save your results and close it before retrying.
+Select the page, open the Network tool, and enable **Always refresh from server**
+or its equivalent. IEChooser uses an internal browser debugging channel; this
+project does not call private F12 interfaces.
 
-1. For an existing IE-mode page, click **Refresh**, select its process, then
-  click **Start Capture**. For a browser that is not open yet, click
-  **Auto Capture** first and then open the IE-mode page.
-2. Wait for the status to show **Capturing**.
-3. Refresh the page or reproduce the operation under investigation.
-4. Select a session to inspect its request, response and timing.
-5. Click **Stop**, then **Export JSONL** to copy all persisted events.
+## Saved Data
 
-Selecting an IE candidate is a heuristic, not proof that it handles the page's
-network requests. No website or traffic capture starts automatically on UI launch.
-
-## Avoid cached 304 responses
-
-An HTTP `304 Not Modified` response intentionally contains no response body, so
-Preview and Body inspectors cannot reconstruct the cached resource.
-This application uses `HttpDiagnosticProvider`, a passive diagnostics API: it
-cannot disable the browser cache, remove conditional headers such as
-`If-None-Match` or `If-Modified-Since`, or turn a `304` into a `200`.
-
-For the most reliable first-load capture without IEChooser:
-
-1. Close every Microsoft Edge and Internet Explorer window and allow their
-  background processes to exit. A running browser can retain an in-memory cache.
-2. Start IE Network Inspector and approve the UAC prompt.
-3. Click **Clear IE Cache** and confirm. This invokes the Windows Internet Options
-  cache-only cleanup for the current user; it does not select cookies, history
-  or saved passwords.
-4. Click **Auto Capture** before opening the browser.
-5. Open the target page in Edge IE mode. The application detects a new
-  `iexplore.exe` every 20 ms, with a 100 ms MSHTML-in-Edge fallback, and starts
-  capture automatically.
-6. Wait for **Capturing**, then navigate or hard-refresh with `Ctrl+F5`.
-
-Auto Capture reduces the process-start race but cannot guarantee that the very
-first request is observed. A session containing only a `completed` event means
-capture attached after that request had already started; missing request,
-response and body events cannot be reconstructed.
-
-For browser-controlled cache disabling, use the Windows IEChooser/F12 tool:
-
-1. Open the target page in Edge IE mode.
-2. Press `Win+R` and run:
-
-  ```text
-  C:\Windows\System32\F12\IEChooser.exe
-  ```
-
-  On 64-bit Windows, `C:\Windows\SysWOW64\F12\IEChooser.exe` may also be
-  available.
-3. Select the target IE-mode page in IEChooser.
-4. Open its Network tool and enable **Always refresh from server** / disable
-  cache, then keep IEChooser attached.
-5. Start capture in IE Network Inspector and refresh the page.
-
-IEChooser can control the IE engine's cache behavior because it is an internal
-browser debugging tool. This project does not call private F12 interfaces and
-does not reproduce that switch. If the server, an enterprise proxy or a CDN still
-returns cached content, use a test URL with a unique query parameter when allowed.
-
-## Public APIs
-
-Application-facing calls use documented Windows SDK or public .NET/WinForms APIs.
-The project builds with the standard .NET SDK and Windows SDK projection
-(`Microsoft.Windows.SDK.NET.Ref`), without private SDKs, private COM interfaces,
-system-source libraries, or a Visual Studio collector installation.
-
-| Area | Public API used | Documentation |
-| --- | --- | --- |
-| HTTP capture | `HttpDiagnosticProvider.CreateFromProcessDiagnosticInfo`, `Start`, `Stop`, `RequestSent`, `ResponseReceived`, `RequestResponseCompleted` | [HttpDiagnosticProvider](https://learn.microsoft.com/en-us/uwp/api/windows.web.http.diagnostics.httpdiagnosticprovider) |
-| Completion metadata | `ActivityId`, `RequestedUri`, `ProcessId`, `Timestamps` | [Completion event arguments](https://learn.microsoft.com/en-us/uwp/api/windows.web.http.diagnostics.httpdiagnosticproviderrequestresponsecompletedeventargs) |
-| Request/response metadata | `Message`, `Timestamp`, `ActivityId`; public HTTP message properties and header collections | [Request event arguments](https://learn.microsoft.com/en-us/uwp/api/windows.web.http.diagnostics.httpdiagnosticproviderrequestsenteventargs), [response event arguments](https://learn.microsoft.com/en-us/uwp/api/windows.web.http.diagnostics.httpdiagnosticproviderresponsereceivedeventargs) |
-| Timing | The nine connection/request/response timestamp properties | [HttpDiagnosticProviderRequestResponseTimestamps](https://learn.microsoft.com/en-us/uwp/api/windows.web.http.diagnostics.httpdiagnosticproviderrequestresponsetimestamps) |
-| Process diagnostics | `ProcessDiagnosticInfo.GetForProcesses`, `GetForCurrentProcess`, `ProcessId` | [ProcessDiagnosticInfo](https://learn.microsoft.com/en-us/uwp/api/windows.system.diagnostics.processdiagnosticinfo) |
-| API availability | `ApiInformation.IsTypePresent` | [ApiInformation](https://learn.microsoft.com/en-us/uwp/api/windows.foundation.metadata.apiinformation) |
-| Bodies | `IHttpContent.ReadAsInputStreamAsync`, `IInputStream`, `AsTask`, `AsStreamForRead`, managed `Stream.ReadAsync` | [ReadAsInputStreamAsync](https://learn.microsoft.com/en-us/uwp/api/windows.web.http.ihttpcontent.readasinputstreamasync), [AsTask](https://learn.microsoft.com/en-us/dotnet/api/system.windowsruntimesystemextensions.astask), [AsStreamForRead](https://learn.microsoft.com/en-us/dotnet/api/system.io.windowsruntimestreamextensions.asstreamforread) |
-| Process listing and worker | `Process.GetProcesses`, `ProcessName`, `Id`, `Modules`, `ProcessModule.ModuleName`, `Process.Start`, redirected streams, `WaitForExitAsync` | [Process](https://learn.microsoft.com/en-us/dotnet/api/system.diagnostics.process), [Modules](https://learn.microsoft.com/en-us/dotnet/api/system.diagnostics.process.modules) |
-| Permission diagnostics | `WindowsIdentity.GetCurrent`, `WindowsPrincipal.IsInRole`, `SecurityIdentifier`; documented Performance Log Users SID | [WindowsPrincipal](https://learn.microsoft.com/en-us/dotnet/api/system.security.principal.windowsprincipal), [well-known SIDs](https://learn.microsoft.com/en-us/windows/win32/secauthz/well-known-sids) |
-| Desktop and persistence | Public WinForms controls/dialogs, System.Drawing, System.IO, System.Text.Json, Channels, Tasks and cancellation APIs | [.NET API reference](https://learn.microsoft.com/en-us/dotnet/api/), [WinForms](https://learn.microsoft.com/en-us/dotnet/desktop/winforms/) |
-| Build diagnostics | Public reflection over this inspector's own assembly, path and module ID | [Assembly](https://learn.microsoft.com/en-us/dotnet/api/system.reflection.assembly) |
-
-`HttpDiagnosticsContract` is a documented Windows Desktop Extension SDK contract
-(version 1, introduced in Windows 10). Its `Windows.*` namespace does not make
-it a private OS interface. The framework's WinRT projection and the Windows
-implementation may perform native/COM/ETW work internally; the inspector consumes
-the public contract rather than those implementation details.
-
-There are no handwritten P/Invoke declarations or hardcoded system ETW provider
-GUIDs/keywords in the current project. An offline self-test rejects direct native
-imports in the application assembly. This is a conservative regression guard,
-not a complete static proof or an audit of Microsoft runtime implementations.
-
-Boundaries: recognizing `iexplore.exe` or `msedge.exe` with `mshtml.dll` is a
-heuristic implemented using public process APIs, not an official IE-mode tab
-discovery contract. Explicit PID entry remains available. Public API status
-does not guarantee event completeness, permission to inspect every process,
-compatibility with enterprise security software, ongoing runtime support or a
-Microsoft product support commitment for this tool.
-
-## Desktop UI
-
-Double-click `Open-UI.cmd`, or run it from Command Prompt:
-
-```cmd
-cd IENetWorkInspector
-Open-UI.cmd
-```
-
-The launcher builds into `bin\IENetworkInspector` and opens
-`IENetworkInspector.exe` from that directory.
-Each capture logs its assembly path and module ID for troubleshooting. If the
-output is locked, the launcher stops after the build error instead of silently
-starting a stale version. Save and close that window first.
-
-No arguments also opens the UI. Refresh the process list, select an IE candidate
-or type a PID, and click Start Capture. Reproduce the request after the status indicates
-capture has started. Stop requests normal worker cleanup; closing the window
-waits for cleanup rather than killing the worker. Windows requests administrator
-approval before the UI starts, and its worker processes inherit that token.
-
-Click **Choose...** to open a resizable process table with separate PID, process,
-architecture and detection columns. Double-click a row to select it.
-
-For a browser that is not running yet, click **Auto Capture** first and then open
-the IE-mode page. The UI checks every 20 ms for a newly created `iexplore.exe`
-and every 100 ms for an Edge process that loads MSHTML, then starts capture as
-soon as it can attach. Existing candidates are ignored so
-the new process can be identified unambiguously. This reduces startup loss but
-cannot provide the zero-race guarantee of a system proxy.
-
-The table correlates request, response, body and timing events by activity ID.
-The Fiddler-style workspace has a menu and capture toolbar across the top,
-sessions and a Quick filter bar on the left, and Statistics, Inspectors and Log
-tabs on the right. Request and Response inspectors are stacked vertically.
-Request provides Headers, Params, Cookies, Raw, Body and Auth. Response provides
-Headers, Cookies, Raw, Preview and Body. Header, parameter and cookie views use
-structured tables with item counts. Body contains Text, JSON, HEX, MessagePack,
-Protobuf, XML and JavaScript format tabs; request bodies also include Form-Data.
-Preview automatically decodes supported complete images or renders captured HTML
-with scripts and external requests disabled. Auth/Cookies show captured header
-values without redaction. Raw is
-explicitly a reconstruction from public API metadata,
-not original wire bytes. JSON shows the corresponding request/response event.
-Body/Text shows a bounded UTF-8 preview (replacement characters can occur at chunk
-boundaries or for non-UTF-8 encodings); it does not execute HTML.
-The original body bytes remain in JSONL exports. Missing body events are not
-presented as empty HTTP content. Drag the splitters to resize the panes.
-
-Some activities deliver only `completed`, without request/response events. The
-worker includes the completion event's full `RequestedUri` as `url` and
-its `processId`. The grid uses this URL/host when no request event is available;
-method, status and headers remain unknown, not guessed. A later request event
-takes precedence. Rows without either URL source display a missing-information
-placeholder. Inspectors show missing event types and the Activity ID. Old
-journals that omitted completion URLs cannot recover them retroactively. This
-fix does not establish why a given provider omitted request/response events.
-
-Filter sessions by URL, host, method, status or content type and optionally by
-2xx, 3xx, errors or pending responses. Filters only affect displayed rows;
-export still includes ALL retained events, including filtered-out sessions.
-The URL/text filter fills the available bar width, while the status selector is
-sized from its longest item so labels such as **All statuses** remain visible.
-The compact table shows session number, status code, method, protocol, host and URL.
-Use **View > Extended Session Columns** to also show duration, content type and
-start time; narrow windows can scroll the columns horizontally.
-Preview, Body and the other inspectors only display data for sessions
-already present in the left list. Filter for `image`, `javascript` or a file name
-to locate resource sessions. A missing row can mean the selected PID did not issue
-the request, the browser served it from cache, or the diagnostics API emitted no event.
-An HTTP `304 Not Modified` response has no response body; the browser uses its
-local cached copy, which this process-scoped diagnostic stream does not expose.
-Stop capture, click **Clear IE Cache**, start capture again, then hard-refresh to
-obtain a `200` response if a response Preview or Body view is required. The
-button asks for confirmation and invokes the Windows Internet Options cache-only
-cleanup for the current user; it does not select cookies, history or passwords.
-Close every Edge/IE window and background process before clearing, then reopen
-the browser. A running browser can retain validators in its in-memory cache.
-Select a row for headers, body and statistics; the Log tab shows exact errors and
-the worker's effective permissions. UI capture always includes available bodies;
-there are no duration, body checkbox or body-size controls. Clicking Start begins
-capture until you click Stop or close the window (errors can still terminate it).
-The optional duration column measures request-sent to response-completed only when both
-timestamps are valid; it is not total page-load or DNS-to-completion time.
-Export copies ALL persisted JSON Lines after capture stops, including events
-no longer cached in the UI. Starting again prompts before clearing the view.
-Clear and starting a new capture retain previous journal files on disk.
-
-The UI starts the same executable as a redirected CLI worker, inheriting its
-permissions, and sends a stop command over stdin. UI mode uses `--continuous`:
-no configured duration, event-count stop, body-size truncation, five-second body
-timeout or 32 MiB retained-text stop. The transport queue remains bounded and
-eight body reads may run concurrently; saturated reads are reported as skipped.
-Completed read tasks are pruned. Continuous bodies are emitted as chunks of at
-most 32 KiB, avoiding whole-body buffering in the worker. Stop cancels unfinished
-reads; already emitted chunks remain available with an incomplete final state.
-This does not guarantee complete capture or reliable 24x7 monitoring.
-
-## Persistence and memory cache
-
-Every UI event is appended to a unique UTF-8 JSONL journal under:
+Capture journals are stored under:
 
 ```text
 %LOCALAPPDATA%\IENetworkInspector\Captures
 ```
 
-Versions before `v0.4.0` used `%LOCALAPPDATA%\IeNetworkDemo\Captures`; existing
-journals remain there and are not moved automatically.
+Versions before `v0.4.0` used `%LOCALAPPDATA%\IeNetworkDemo\Captures`. Existing
+journals are not moved automatically.
 
-Clear, Clear IE Cache and Export are on the process-selection toolbar; there is
-no directory button. Open the path above in File Explorer to access journals. Files are flushed
-to the OS after each record, retained after Clear/new capture/window close,
-and are not automatically deleted or rotated. Normal flushing is not a promise
-of power-loss durability. Forced termination can lose queued/unflushed events
-or leave an incomplete final record. The journal path is shown in the run log.
+Journals are UTF-8 JSON Lines files. They are not encrypted or automatically
+rotated. Files remain after clearing the UI or closing the application. Protect
+and delete them according to your organization's retention requirements.
 
-The live grid retains up to 1000 recently updated activities and approximately
-32 MiB of accounted event/preview data, evicting the oldest cached activity.
-Each body's preview retains at most 4 MiB; oversized non-chunk events remain
-on disk with a placeholder in the inspector. These are cache limits, NOT capture
-truncation limits. Total process memory can exceed the accounting budget due to
-JSON objects, grid controls, strings, queues and OS buffers. Evicted activities
-can reappear if later events arrive, but their in-memory details may be partial.
-Filtering applies only to cached rows. Historical browsing/import is not yet
-implemented; use the journals or full export for evicted data.
+The live UI caches up to 1000 recent activities, approximately 32 MiB of event
+and preview data, and up to 4 MiB of preview bytes per body. Export reads the
+full journal, including records evicted from the live UI.
 
-UI persistence uses a single writer. A disk/permission error requests a normal
-capture stop and reports that subsequent queued events were not saved; the
-existing file is retained. Export uses a temporary file then replaces the
-destination only after copying completes, and rejects the active journal as a
-destination. Monitor free space and manually delete retired journals after
-closing their capture. No disk quota or automatic retention policy is imposed.
+## Troubleshooting
 
-Journals are NOT encrypted by the inspector and may include credentials, personal
-information or business content. The directory inherits the current user's
-local-app-data permissions; protect the files and apply an approved retention
-policy. Persistence happens automatically, not only when Export is clicked.
+### Access denied (`0x80070005`)
 
-### Continuous body event format
+Confirm the application was started through `IENetworkInspector.exe` and the UAC
+prompt was approved. The Log should show:
 
-Continuous/UI mode emits `body-chunk` records containing `activityId`,
-`direction`, zero-based `sequence`, `bytes`, `encoding: "base64"` and `data`.
-Reconstruct by grouping activity ID and direction, verifying contiguous
-sequence numbers, base64-decoding EACH chunk separately and concatenating the
-decoded bytes. Do not concatenate base64 strings before decoding.
-A final `body` record uses `encoding: "base64-chunks"`, the total `bytes` and
-`chunks`, and `streamEnded: true` when the stream ends normally. Failed or
-cancelled reads instead emit an error state; missing final records or sequence
-gaps mean completeness is unknown. Older bounded CLI capture still emits a
-single `body` record with inline base64 data. Export preserves this distinction.
-
-## Build and verify
-
-Run from the repository root:
-
-```powershell
-dotnet build -c Release
-dotnet run -c Release --no-build -- --self-test
-dotnet run -c Release --no-build -- --ui-self-test
-dotnet run -c Release --no-build -- --help
+```text
+Enabled administrator role: True
 ```
 
-`--self-test` checks options, full header/URL capture, body streaming/cancellation, native-import
-absence, journal persistence and export. `--ui-self-test` uses synthetic events
-to check filtering, missing metadata, inspectors, cache eviction and full export.
-It briefly opens a window and writes two viewport screenshots beside the built
-executable. Neither self-test captures network traffic; UI tests require an
-interactive Windows desktop. These checks do not replace real-world validation.
+Elevation does not guarantee access to every target process or provider.
 
-For the commands below, `dotnet run` builds the default Debug configuration as
-needed. The desktop launch script separately builds its own output directory.
+### Target/provider architecture mismatch
 
-## Diagnose access denied
+The application and target process must use the same architecture. Select the
+matching win-x64 or win-x86 package. The application blocks cross-architecture
+`HttpDiagnosticProvider.Start` calls because they can terminate the worker in
+native code.
 
-Run this in the same terminal where capture failed:
+### Native crash (`0xC0000005`)
 
-```powershell
-dotnet run -- --diagnose
-```
-
-This reports OS version, process architecture, enabled administrator and
-Performance Log Users roles, and API type availability without starting ETW.
-An enabled role does not prove access to every provider or target process.
-A disabled administrator role can indicate that the executable manifest was
-bypassed, for example by directly running the DLL. Normal executable launches
-request elevation but do not change security policy. If the role is enabled but Start still fails,
-the exact denied operation needs tracing; the HRESULT alone does not identify it.
-
-To distinguish API startup failures from target-specific issues, test the
-public HTTP API against only the inspector process in the same terminal:
+A fatal access violation in `HttpDiagnosticProvider.Start` occurs inside the
+Windows diagnostics provider before capture starts and cannot be caught as a
+normal .NET exception. First verify matching architectures. Then run the
+self-probe from an elevated terminal:
 
 ```powershell
-dotnet run -- --probe-http-self
+dotnet .\IENetworkInspector.dll --probe-http-self
 ```
 
-This creates a HttpDiagnosticProvider for the current process, calls Start and
-then Stop if Start succeeds, without event subscriptions or HTTP requests.
-It is an active API/session test, not just a read-only token query. Success does
-not prove IE capture works; failure shows the problem also occurs without an IE
-target. Keep the token and OS version consistent when comparing probe results.
+If the self-probe also crashes, record the exact Windows build and report the
+provider issue. If it succeeds, retry another matching-architecture IE candidate.
 
-If the worker terminates with `Fatal error. 0xC0000005` in
-`HttpDiagnosticProvider.Start`, the Windows diagnostics provider crashed in
-native code before capture began; ordinary .NET exception handling cannot catch
-that failure. The UI isolates capture in a worker process and reports this exit
-code in the Log. Compare the logged target and provider architectures first.
-Cross-architecture behavior is not documented for this API, so retry with a
-matching x86/x64 build if they differ. If the architectures match, run
-`--probe-http-self` from an elevated terminal. A self-probe crash is independent
-of the target PID and should be reported with the exact Windows build; a
-successful self-probe points instead to the selected target or its architecture.
+### No or incomplete sessions
 
-## Capture approved test traffic
+- Confirm the selected PID actually issues the page's requests.
+- Refresh the candidate list after navigation creates a new process.
+- Start capture before navigating to the target page.
+- Cached resources may produce no new request or a bodyless `304` response.
+- A PID is not a tab filter; multiple tabs may share one process.
 
-List IE candidates without starting capture:
+## Known Limitations
+
+- Candidate detection is heuristic and does not identify a specific browser tab.
+- The public API may omit events or bodies and does not provide historical backfill.
+- Captured data is HTTP metadata/body content exposed by the Windows diagnostics
+  API, not an exact wire dump.
+- The tool does not modify proxy, TLS, certificate, browser policy, or cache
+  request headers.
+- Forced termination can leave an incomplete final journal record.
+
+## Build from Source
+
+Requirements: Windows and the [.NET 9 SDK](https://dotnet.microsoft.com/download/dotnet/9.0).
 
 ```powershell
-dotnet run -- --list
+dotnet build IeNetworkDemo.csproj -c Release -o bin\IENetworkInspector
+dotnet .\bin\IENetworkInspector\IENetworkInspector.dll --self-test
+dotnet .\bin\IENetworkInspector\IENetworkInspector.dll --ui-self-test
 ```
 
-Automatically enumerate and select a target:
+Alternatively, run `Open-UI.cmd`; it builds and starts the UI without keeping a
+console window open.
 
-```powershell
-dotnet run -- --auto --seconds 30 --body-bytes 16384 > capture.jsonl
-```
-
-With one candidate, capture starts automatically. With multiple candidates,
-enter a listed PID at the prompt; Enter or end-of-input cancels. The candidate
-list and prompt go to stderr, leaving stdout for JSON Lines. Do not redirect
-stderr into the capture file. For unattended use, specify an explicit PID.
-
-Detection includes `iexplore.exe` and `msedge.exe` processes with a loaded
-`mshtml.dll`. IE candidates may be broker or content processes; this is not
-tab identification or proof that a candidate issues requests. Access restrictions,
-process exits or cross-bitness module inspection can make enumeration incomplete.
-The application is already elevated before enumeration; no page-content inspection
-is performed. Run enumeration again if
-the page navigates to a new process. Other MSHTML hosts are not auto-selected.
-
-Open the test site in Edge IE mode. Determine the PID that actually issues its
-WinINet requests; do not assume it is the main Edge process. A PID is not a tab
-filter: other traffic in the same process may also be captured. Replace `1234`:
-
-```powershell
-dotnet run -- 1234 --seconds 30 > capture.jsonl
-```
-
-Start the inspector before reproducing requests. Ctrl+C stops early. The CLI default is
-30 seconds, with bodies disabled. For controlled, non-sensitive GET/POST tests:
-
-```powershell
-dotnet run -- 1234 --seconds 30 --body-bytes 16384 > capture.jsonl
-```
-
-JSON Lines go to stdout and status messages to stderr. Match request, response,
-completion and body records using `activityId`. All property names use camelCase.
-Body records can arrive before their corresponding header record.
-Bodies are base64, not necessarily text or decompressed. Truncation is reported.
-Timestamps are the API's stage timestamps, not inferred latency measurements;
-missing or default timestamps must not be treated as valid timing data.
-
-Bounded CLI limits: 300 seconds, 2000 diagnostic callbacks, 64 KiB per body, 8 concurrent
-body reads and 5 seconds per body. Saturated reads are skipped, not queued.
-Stopping cancels pending reads; unavailable or incomplete bodies are not proof
-of empty HTTP content. Limits do not bound all buffering inside Windows ETW.
-For explicit manual-stop CLI capture with bodies enabled and no configured
-duration/size limit, use `dotnet run -- 1234 --continuous`.
-
-## Safety and interpretation
-
-- Keep required enterprise security controls enabled. Compatibility with proxies,
-  TLS inspection and endpoint security software must be validated in your environment.
-- URLs, headers and captured bodies are not redacted. Cookies, authorization
-  values, query strings, credentials and personal/business data may be written
-  to journals and exports. Only use approved test traffic, protect exports and
-  follow your retention policy.
-- Access denied after elevation requires administrator review of
-  ETW/process/provider permissions. The inspector does not change group membership.
-- A successful Start call does not prove event delivery or complete PID filtering.
-  Validate against known server-side GET/POST records. No automatic reattachment,
-  historical backfill, cross-process correlation or non-WinINet coverage is promised.
-- In capture mode, exit 0 means some events were seen without a reported
-  event/cleanup failure, not that capture was complete. Exit 2 means no events,
-  no candidates, or cancelled selection. Exit 1 means an error. Listing, help
-  and self-tests can exit 0 without starting capture.
-- Normal stop calls Provider.Stop and waits for body operations. Forced process
-  termination cannot guarantee cleanup. This experiment does not stop unrelated
-  ETW sessions manually.
-
-Recommended first test: an approved IE-mode page with known HTTPS GET and POST
-payloads; compare URL, method, status, headers, body bytes and stage timestamps
-while required security controls remain enabled. Repeat using the intended operator account.
-
-## Project layout
-
-| File | Purpose |
-| --- | --- |
-| `IeNetworkDemo.csproj` | Windows-targeted .NET / WinForms project |
-| `Program.cs` | Entry points, process discovery, HTTP capture and CLI tests |
-| `CaptureForm.cs` | Desktop inspectors, filtering, worker communication and UI tests |
-| `CaptureJournal.cs` | Local JSONL journal and full-file export |
-| `Open-UI.cmd` | Build-and-launch entry point for the desktop UI |
-
-The repository intentionally excludes captures, exports, binaries, debug symbols
-and build caches. Do not attach real traffic journals to public issues. Report
-problems with the OS/runtime version, HRESULT, reproduction steps and sanitized
-synthetic examples instead.
+The application uses public Windows/.NET APIs plus Microsoft WebView2. It has no
+handwritten native imports or hardcoded ETW provider identifiers. See the source
+and release notes for implementation details and validated package hashes.
