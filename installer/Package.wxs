@@ -1,0 +1,68 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+    Name="IE Network Inspector"
+    Manufacturer="ylq-cg"
+    Version="$(var.ProductVersion)"
+    Language="1033"
+    UpgradeCode="27E5E8D4-C980-4B7E-B65E-759B764E65DD"
+    Scope="perMachine">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of IE Network Inspector is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+    <Property Id="CREATE_START_MENU_SHORTCUT" Value="1" Secure="yes" />
+    <Property Id="CREATE_DESKTOP_SHORTCUT" Value="0" Secure="yes" />
+    <UIRef Id="IENetworkInspectorUI" />
+    <UIRef Id="WixUI_ErrorProgressText" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="IE Network Inspector" />
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Component Id="StartMenuShortcutComponent" Condition="CREATE_START_MENU_SHORTCUT = 1">
+        <Shortcut
+          Id="StartMenuShortcut"
+          Name="IE Network Inspector"
+          Description="Inspect Internet Explorer network traffic"
+          Target="[INSTALLFOLDER]IENetworkInspector.exe"
+          WorkingDirectory="INSTALLFOLDER" />
+        <RegistryValue
+          Root="HKLM"
+          Key="Software\ylq-cg\IENetworkInspector"
+          Name="StartMenuShortcut"
+          Type="integer"
+          Value="1"
+          KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+
+    <StandardDirectory Id="DesktopFolder">
+      <Component Id="DesktopShortcutComponent" Condition="CREATE_DESKTOP_SHORTCUT = 1">
+        <Shortcut
+          Id="DesktopShortcut"
+          Name="IE Network Inspector"
+          Description="Inspect Internet Explorer network traffic"
+          Target="[INSTALLFOLDER]IENetworkInspector.exe"
+          WorkingDirectory="INSTALLFOLDER" />
+        <RegistryValue
+          Root="HKLM"
+          Key="Software\ylq-cg\IENetworkInspector"
+          Name="DesktopShortcut"
+          Type="integer"
+          Value="1"
+          KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+
+    <Feature Id="MainFeature" Title="IE Network Inspector">
+      <ComponentGroupRef Id="ApplicationFiles" />
+      <ComponentRef Id="StartMenuShortcutComponent" />
+      <ComponentRef Id="DesktopShortcutComponent" />
+    </Feature>
+  </Package>
+
+  <Fragment>
+    <ComponentGroup Id="ApplicationFiles" Directory="INSTALLFOLDER">
+      <Files Include="$(var.PublishDir)\**" />
+    </ComponentGroup>
+  </Fragment>
+</Wix>

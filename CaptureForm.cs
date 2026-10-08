@@ -18,7 +18,8 @@ internal sealed class CaptureForm : Form
     private readonly Button start = new() { Text = "Start", AutoSize = true };
     private readonly Button stop = new() { Text = "Stop", AutoSize = true, Enabled = false };
     private readonly Button clear = new() { Text = "Clear", AutoSize = true };
-    private readonly Button export = new() { Text = "Export JSONL", AutoSize = true, Enabled = false };
+    private readonly Button importCapture = new() { Text = "Import...", AutoSize = true };
+    private readonly Button export = new() { Text = "Export...", AutoSize = true, Enabled = false };
     private readonly Label state = new() { Text = "Ready", AutoSize = true, ForeColor = Color.FromArgb(23, 97, 68) };
     private readonly Label counter = new() { Text = "0 sessions / 0 events", AutoSize = true };
     private readonly DataGridView grid = new()
@@ -85,6 +86,10 @@ internal sealed class CaptureForm : Form
     private readonly ToolTip tips = new();
     private Channel<(bool IsError, string Line)>? messages;
     private Process? worker;
+    private string? loadedCapturePath;
+    private bool loadedCaptureIsHar;
+    private long loadedEventCount;
+    private long loadedBytes;
     private bool stopping;
     private bool closePending;
     private bool refreshing;
@@ -113,12 +118,18 @@ internal sealed class CaptureForm : Form
 
         var menu = new MenuStrip { Dock = DockStyle.Fill, GripStyle = ToolStripGripStyle.Hidden, BackColor = Color.White };
         var fileMenu = new ToolStripMenuItem("&File");
-        var exportMenuItem = new ToolStripMenuItem("Export JSONL...");
+        var importMenuItem = new ToolStripMenuItem("Import Capture...");
+        importMenuItem.Click += (_, _) => ChooseCaptureFile();
+        var exportMenuItem = new ToolStripMenuItem("Export...");
         exportMenuItem.Click += (_, _) => Export();
         var exitMenuItem = new ToolStripMenuItem("Exit");
         exitMenuItem.Click += (_, _) => Close();
-        fileMenu.DropDownItems.AddRange(new ToolStripItem[] { exportMenuItem, new ToolStripSeparator(), exitMenuItem });
-        fileMenu.DropDownOpening += (_, _) => exportMenuItem.Enabled = export.Enabled;
+        fileMenu.DropDownItems.AddRange(new ToolStripItem[] { importMenuItem, exportMenuItem, new ToolStripSeparator(), exitMenuItem });
+        fileMenu.DropDownOpening += (_, _) =>
+        {
+            importMenuItem.Enabled = importCapture.Enabled;
+            exportMenuItem.Enabled = export.Enabled;
+        };
         var captureMenu = new ToolStripMenuItem("&Capture");
         var refreshMenuItem = new ToolStripMenuItem("Refresh Processes");
         refreshMenuItem.Click += async (_, _) => await RefreshProcesses();
@@ -168,6 +179,7 @@ internal sealed class CaptureForm : Form
         StyleCommandButton(chooseProcess);
         StyleCommandButton(refresh);
         StyleCommandButton(clear);
+        StyleCommandButton(importCapture);
         StyleCommandButton(export);
         targetBar.Controls.Add(start);
         targetBar.Controls.Add(stop);
@@ -178,6 +190,7 @@ internal sealed class CaptureForm : Form
         targetBar.Controls.Add(refresh);
         targetBar.Controls.Add(Separator());
         targetBar.Controls.Add(clear);
+        targetBar.Controls.Add(importCapture);
         targetBar.Controls.Add(export);
         layout.Controls.Add(targetBar, 0, 1);
 
@@ -266,12 +279,14 @@ internal sealed class CaptureForm : Form
         tips.SetToolTip(processes, "Select an IE candidate or enter the request process PID. Candidates do not identify tabs.");
         tips.SetToolTip(chooseProcess, "Open a table showing PID, architecture and detection details.");
         tips.SetToolTip(start, "Capture bodies until stopped. Events are saved locally. Use approved test traffic only.");
-        tips.SetToolTip(export, "Export all persisted events. Paths, custom headers and bodies may still contain sensitive data.");
+        tips.SetToolTip(importCapture, "Import or drop a HAR or JSONL capture without modifying the source file.");
+        tips.SetToolTip(export, "Export the complete capture as HAR or JSONL. Sensitive data is not redacted.");
         refresh.Click += async (_, _) => await RefreshProcesses();
         chooseProcess.Click += async (_, _) => await ChooseProcess();
         start.Click += async (_, _) => await StartCapture();
         stop.Click += (_, _) => StopCapture();
         clear.Click += (_, _) => ClearCapture();
+        importCapture.Click += (_, _) => ChooseCaptureFile();
         export.Click += (_, _) => Export();
         grid.SelectionChanged += (_, _) => ShowDetails();
         processes.TextChanged += (_, _) => tips.SetToolTip(processes, processes.Text);
@@ -279,6 +294,12 @@ internal sealed class CaptureForm : Form
         filter.TextChanged += (_, _) => ApplyFilters();
         statusFilter.SelectedIndexChanged += (_, _) => ApplyFilters();
         timer.Tick += (_, _) => DrainMessages();
+        AllowDrop = true;
+        grid.AllowDrop = true;
+        DragEnter += CaptureDragEnter;
+        DragDrop += CaptureDragDrop;
+        grid.DragEnter += CaptureDragEnter;
+        grid.DragDrop += CaptureDragDrop;
         Shown += async (_, _) =>
         {
             split.SplitterDistance = (int)(split.Width * 0.44);
@@ -743,7 +764,7 @@ internal sealed class CaptureForm : Form
             MessageBox.Show(this, "Select a candidate process or enter a valid PID.", "Target process", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
-        if (journal?.Count > 0 && MessageBox.Show(this, "Starting a new capture clears this view. Previous journals remain on disk. Continue?", "New capture", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+        if (HasCaptureData && MessageBox.Show(this, "Starting a new capture clears this view. Previous journals and imported files remain on disk. Continue?", "New capture", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
         ClearCapture();
         messages = Channel.CreateBounded<(bool, string)>(new BoundedChannelOptions(256) { SingleReader = true, FullMode = BoundedChannelFullMode.Wait });
         var activeChannel = messages;
@@ -871,7 +892,7 @@ internal sealed class CaptureForm : Form
             }
         }
         UpdateCounter();
-        export.Enabled = worker is null && journal?.Count > 0;
+        export.Enabled = worker is null && HasCaptureData;
         ShowDetails();
     }
 
@@ -879,6 +900,11 @@ internal sealed class CaptureForm : Form
     {
         EnsureJournal();
         journal!.Append(line);
+        DisplayRecord(line);
+    }
+
+    private void DisplayRecord(string line, bool refreshDetails = true)
+    {
         using var document = JsonDocument.Parse(line);
         var record = document.RootElement;
         if (!record.TryGetProperty("activityId", out var activity)) return;
@@ -920,7 +946,7 @@ internal sealed class CaptureForm : Form
             entry.Revision++;
             ApplyFilter(entry);
             TrimCache();
-            ShowDetails();
+            if (refreshDetails) ShowDetails();
             return;
         }
         if (kind == "body") kind += ":" + record.GetProperty("direction").GetString();
@@ -970,7 +996,7 @@ internal sealed class CaptureForm : Form
         }
         ApplyFilter(entry);
         TrimCache();
-        ShowDetails();
+        if (refreshDetails) ShowDetails();
     }
 
     private void EnsureJournal()
@@ -1024,7 +1050,12 @@ internal sealed class CaptureForm : Form
         ShowDetails();
     }
 
-    private void UpdateCounter() => counter.Text = $"{requests.Values.Count(entry => entry.Row.Visible)} / {requests.Count} cached sessions | {journal?.Count ?? 0} events saved | {(journal?.Bytes ?? 0) / 1048576.0:F1} MiB"
+    private bool HasCaptureData => (journal?.Count ?? loadedEventCount) > 0;
+    private string? CaptureFilePath => journal?.FilePath ?? loadedCapturePath;
+    private long CaptureEventCount => journal?.Count ?? loadedEventCount;
+    private long CaptureBytes => journal?.Bytes ?? loadedBytes;
+
+    private void UpdateCounter() => counter.Text = $"{requests.Values.Count(entry => entry.Row.Visible)} / {requests.Count} cached sessions | {CaptureEventCount} events {(journal is null && loadedCapturePath is not null ? "loaded" : "saved")} | {CaptureBytes / 1048576.0:F1} MiB"
         + (worker is not null ? $" | {(DateTime.UtcNow - captureStart).TotalSeconds:F0} s" : "");
 
     internal static double? Duration(JsonElement record)
@@ -1442,6 +1473,7 @@ internal sealed class CaptureForm : Form
     private void ClearCapture()
     {
         journal?.Dispose(); journal = null;
+        loadedCapturePath = null; loadedCaptureIsHar = false; loadedEventCount = 0; loadedBytes = 0;
         requests.Clear(); grid.Rows.Clear(); cacheOrder.Clear(); cachedBytes = 0; nextRowNumber = 0; storageFailed = false;
         shownEntry = null; shownRevision = -1;
         ClearInspectors(); log.Clear();
@@ -1449,19 +1481,176 @@ internal sealed class CaptureForm : Form
         export.Enabled = false; counter.Text = "0 sessions / 0 events";
     }
 
+    private void ChooseCaptureFile()
+    {
+        using var dialog = new OpenFileDialog
+        {
+            Filter = "Capture files (*.jsonl;*.har)|*.jsonl;*.har|JSON Lines (*.jsonl)|*.jsonl|HTTP Archive (*.har)|*.har",
+            CheckFileExists = true,
+            Multiselect = false
+        };
+        if (dialog.ShowDialog(this) == DialogResult.OK) TryImportCapture(dialog.FileName, true);
+    }
+
+    private void CaptureDragEnter(object? sender, DragEventArgs eventArgs)
+    {
+        eventArgs.Effect = worker is null && DroppedCapture(eventArgs) is not null ? DragDropEffects.Copy : DragDropEffects.None;
+    }
+
+    private void CaptureDragDrop(object? sender, DragEventArgs eventArgs)
+    {
+        if (worker is null && DroppedCapture(eventArgs) is { } path) TryImportCapture(path, true);
+    }
+
+    private static string? DroppedCapture(DragEventArgs eventArgs)
+    {
+        if (!eventArgs.Data!.GetDataPresent(DataFormats.FileDrop)
+            || eventArgs.Data.GetData(DataFormats.FileDrop) is not string[] { Length: 1 } paths) return null;
+        var extension = Path.GetExtension(paths[0]);
+        if (!extension.Equals(".jsonl", StringComparison.OrdinalIgnoreCase)
+            && !extension.Equals(".har", StringComparison.OrdinalIgnoreCase)) return null;
+        return paths[0];
+    }
+
+    private bool TryImportCapture(string path, bool confirmReplacement, bool showError = true)
+    {
+        try { return ImportCaptureFile(path, confirmReplacement); }
+        catch (Exception error)
+        {
+            ReportError(error);
+            if (showError)
+                MessageBox.Show(this, "Could not import the capture. Select a valid HAR file or a JSONL file containing one complete event per non-empty line.\r\n\r\n" + error.Message,
+                    "Import Capture", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return false;
+        }
+    }
+
+    private bool ImportCaptureFile(string path, bool confirmReplacement)
+    {
+        if (worker is not null) return false;
+        var extension = Path.GetExtension(path);
+        var isHar = extension.Equals(".har", StringComparison.OrdinalIgnoreCase);
+        IEnumerable<string> records;
+        long eventCount;
+        if (isHar)
+        {
+            var harImport = HarImporter.Read(path);
+            records = harImport.Records;
+            eventCount = harImport.Records.Count;
+        }
+        else if (extension.Equals(".jsonl", StringComparison.OrdinalIgnoreCase))
+        {
+            var metadata = ValidateJsonl(path);
+            records = File.ReadLines(path);
+            eventCount = metadata.Events;
+        }
+        else throw new InvalidDataException("Select a .har or .jsonl capture file.");
+        if (confirmReplacement && HasCaptureData
+            && MessageBox.Show(this, "Importing this file replaces the sessions currently shown. Existing capture files remain on disk. Continue?", "Import Capture", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return false;
+        UseWaitCursor = true;
+        grid.SuspendLayout();
+        try
+        {
+            ClearCapture();
+            foreach (var line in records)
+                if (!string.IsNullOrWhiteSpace(line)) DisplayRecord(line, false);
+            loadedCapturePath = Path.GetFullPath(path);
+            loadedCaptureIsHar = isHar;
+            loadedEventCount = eventCount;
+            loadedBytes = new FileInfo(path).Length;
+            grid.ClearSelection();
+            if (grid.Rows.Cast<DataGridViewRow>().FirstOrDefault(row => row.Visible) is { } first)
+            {
+                first.Selected = true;
+                grid.CurrentCell = first.Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
+            }
+            UpdateCounter();
+            ShowDetails();
+            export.Enabled = HasCaptureData;
+            state.ForeColor = Color.FromArgb(23, 97, 68);
+            state.Text = $"Imported {eventCount} events from {Path.GetFileName(path)}";
+            return true;
+        }
+        catch
+        {
+            ClearCapture();
+            throw;
+        }
+        finally
+        {
+            grid.ResumeLayout();
+            UseWaitCursor = false;
+        }
+    }
+
+    private static (long Events, long Bytes) ValidateJsonl(string path)
+    {
+        long events = 0;
+        long supported = 0;
+        long lineNumber = 0;
+        foreach (var line in File.ReadLines(path))
+        {
+            lineNumber++;
+            if (string.IsNullOrWhiteSpace(line)) continue;
+            try
+            {
+                using var document = JsonDocument.Parse(line);
+                events++;
+                var record = document.RootElement;
+                if (record.ValueKind == JsonValueKind.Object
+                    && record.TryGetProperty("kind", out var kind) && kind.ValueKind == JsonValueKind.String
+                    && record.TryGetProperty("activityId", out var activity) && activity.ValueKind == JsonValueKind.String)
+                    supported++;
+            }
+            catch (JsonException error)
+            {
+                throw new InvalidDataException($"Invalid JSONL at line {lineNumber}: {error.Message}", error);
+            }
+        }
+        if (events == 0 || supported == 0) throw new InvalidDataException("The file does not contain IE Network Inspector events.");
+        return (events, new FileInfo(path).Length);
+    }
+
     private void Export()
     {
-        using var dialog = new SaveFileDialog { Filter = "JSON Lines (*.jsonl)|*.jsonl", FileName = $"ie-network-{DateTime.Now:yyyyMMdd-HHmmss}.jsonl", OverwritePrompt = true };
+        var source = CaptureFilePath;
+        if (source is null) return;
+        using var dialog = new SaveFileDialog
+        {
+            Filter = "HTTP Archive (*.har)|*.har|JSON Lines (*.jsonl)|*.jsonl",
+            FilterIndex = 1,
+            DefaultExt = "har",
+            AddExtension = true,
+            FileName = $"ie-network-{DateTime.Now:yyyyMMdd-HHmmss}",
+            OverwritePrompt = true
+        };
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
-        try { journal?.Export(dialog.FileName); state.Text = "All journal events exported"; }
+        try
+        {
+            if (dialog.FilterIndex == 1)
+            {
+                if (journal is not null) journal.ExportHar(dialog.FileName);
+                else if (loadedCaptureIsHar) CaptureJournal.ExportFile(source, dialog.FileName);
+                else HarExporter.Export(source, dialog.FileName);
+                state.Text = "Capture exported as HAR";
+            }
+            else
+            {
+                if (journal is not null) journal.Export(dialog.FileName);
+                else if (loadedCaptureIsHar) HarImporter.ExportJsonl(source, dialog.FileName);
+                else CaptureJournal.ExportFile(source, dialog.FileName);
+                state.Text = "All journal events exported as JSONL";
+            }
+        }
         catch (Exception error) { ReportError(error); }
     }
 
     private void SetCapturing(bool capturing)
     {
         processes.Enabled = chooseProcess.Enabled = refresh.Enabled = start.Enabled = clear.Enabled = !capturing;
+        importCapture.Enabled = !capturing;
         stop.Enabled = capturing;
-        export.Enabled = !capturing && journal?.Count > 0;
+        export.Enabled = !capturing && HasCaptureData;
     }
 
     private static bool IsNativeAccessViolation(int exitCode) => exitCode == NativeAccessViolationExitCode;
@@ -1591,7 +1780,8 @@ internal sealed class CaptureForm : Form
         if (Descendants(form).Any(control => control is NumericUpDown or CheckBox))
             throw new InvalidOperationException("Removed capture options are still visible.");
         if (form.chooseProcess.Parent != form.processes.Parent || form.clear.Parent != form.processes.Parent
-            || form.export.Parent != form.processes.Parent
+            || form.importCapture.Parent != form.processes.Parent || form.export.Parent != form.processes.Parent
+            || !form.AllowDrop || !form.grid.AllowDrop
             || Descendants(form).Any(control => control.Text == "Open capture directory"))
             throw new InvalidOperationException("Capture actions must share the process toolbar without a folder button.");
         form.AddRecord("""{"kind":"body","activityId":"sample","direction":"request","encoding":"base64","bytes":11,"truncated":false,"streamEnded":true,"data":"eyJvayI6dHJ1ZX0="}""");
@@ -1704,9 +1894,10 @@ internal sealed class CaptureForm : Form
             bitmap.Save(Path.Combine(directory, $"ui-test-{size.Width}.png"));
         }
         form.SetCapturing(true);
-        if (form.start.Enabled || form.chooseProcess.Enabled || !form.stop.Enabled || form.export.Enabled)
+        if (form.start.Enabled || form.chooseProcess.Enabled || !form.stop.Enabled || form.importCapture.Enabled || form.export.Enabled)
             throw new InvalidOperationException("Capture control state test failed.");
         form.SetCapturing(false);
+        if (!form.importCapture.Enabled) throw new InvalidOperationException("Capture import did not re-enable after capture.");
         var bodyChunk = Convert.ToBase64String(Encoding.UTF8.GetBytes(new string('a', 32768)));
         for (var sequence = 0; sequence < 130; sequence++)
             form.AddRecord(JsonSerializer.Serialize(new { kind = "body-chunk", activityId = "sample", direction = "response", sequence, data = bodyChunk }));
@@ -1732,8 +1923,49 @@ internal sealed class CaptureForm : Form
         form.ClearCapture();
         if (form.grid.Rows.Count != 0 || form.export.Enabled || form.requestHeadersGrid.Rows.Count != 0)
             throw new InvalidOperationException("Clear state test failed.");
+        var importPath = Path.Combine(form.journalDirectory, "import.jsonl");
+        var importLines = new[]
+        {
+            """{"kind":"request","activityId":"imported","timestamp":"2026-09-17T10:00:00Z","method":"GET","url":"https://example.test/imported?q=verify","headers":{"Accept":"application/json"},"contentHeaders":{}}""",
+            """{"kind":"body","activityId":"imported","direction":"response","encoding":"base64","bytes":11,"truncated":false,"streamEnded":true,"data":"eyJvayI6dHJ1ZX0="}""",
+            """{"kind":"response","activityId":"imported","timestamp":"2026-09-17T10:00:00.010Z","status":201,"headers":{},"contentHeaders":{"Content-Type":"application/json"}}""",
+            """{"kind":"completed","activityId":"imported","requestSentTimestamp":"2026-09-17T10:00:00Z","requestCompletedTimestamp":"2026-09-17T10:00:00.004Z","responseReceivedTimestamp":"2026-09-17T10:00:00.010Z","responseCompletedTimestamp":"2026-09-17T10:00:00.020Z"}"""
+        };
+        var importText = string.Join(Environment.NewLine, importLines) + Environment.NewLine;
+        File.WriteAllText(importPath, importText);
+        if (!form.ImportCaptureFile(importPath, false) || form.journal is not null || form.loadedCapturePath != Path.GetFullPath(importPath)
+            || form.loadedEventCount != importLines.Length || form.requests.Count != 1 || !form.export.Enabled
+            || form.responseBodyJson.Text.Contains("\"ok\": true") == false || File.ReadAllText(importPath) != importText)
+            throw new InvalidOperationException("JSONL import or formatted inspection failed.");
+        var malformedPath = Path.Combine(form.journalDirectory, "malformed.jsonl");
+        File.WriteAllText(malformedPath, importLines[0] + Environment.NewLine + "{invalid");
+        if (form.TryImportCapture(malformedPath, false, false)
+            || form.requests.Count != 1 || form.loadedCapturePath != Path.GetFullPath(importPath)
+            || !form.log.Text.Contains("InvalidDataException"))
+            throw new InvalidOperationException("Malformed JSONL replaced the current view before validation completed.");
+        var importedHar = Path.Combine(form.journalDirectory, "import.har");
+        HarExporter.Export(form.CaptureFilePath!, importedHar);
+        using (var har = JsonDocument.Parse(File.ReadAllText(importedHar)))
+        {
+            var entry = har.RootElement.GetProperty("log").GetProperty("entries")[0];
+            if (entry.GetProperty("request").GetProperty("url").GetString() != "https://example.test/imported?q=verify"
+                || entry.GetProperty("response").GetProperty("status").GetInt32() != 201
+                || entry.GetProperty("response").GetProperty("content").GetProperty("text").GetString() != "{\"ok\":true}")
+                throw new InvalidOperationException("Imported JSONL to HAR conversion failed.");
+        }
+        var importedCopy = Path.Combine(form.journalDirectory, "import-copy.jsonl");
+        CaptureJournal.ExportFile(form.CaptureFilePath!, importedCopy);
+        if (File.ReadAllText(importedCopy) != importText) throw new InvalidOperationException("Imported JSONL re-export changed the source data.");
+        if (!form.ImportCaptureFile(importedHar, false) || !form.loadedCaptureIsHar || form.requests.Count != 1
+            || form.grid.Rows[0].Cells["status"].Value?.ToString() != "201"
+            || !form.responseBodyJson.Text.Contains("\"ok\": true"))
+            throw new InvalidOperationException("HAR import or formatted inspection failed.");
+        var harJsonl = Path.Combine(form.journalDirectory, "har-import.jsonl");
+        HarImporter.ExportJsonl(form.CaptureFilePath!, harJsonl);
+        if (File.ReadLines(harJsonl).Count() != 4)
+            throw new InvalidOperationException("Imported HAR to JSONL export failed.");
         form.Close();
-        Console.WriteLine("PASS: UI, response Preview, body formats, cache eviction, complete disk export, retained journals and viewport snapshots. No capture started.");
+        Console.WriteLine("PASS: UI, HAR/JSONL import and export, response Preview, body formats, cache eviction, retained journals and viewport snapshots. No capture started.");
         return 0;
     }
 }

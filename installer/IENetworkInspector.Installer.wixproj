@@ -1,0 +1,19 @@
+<Project Sdk="WixToolset.Sdk/5.0.2">
+  <PropertyGroup>
+    <InstallerPlatform>x64</InstallerPlatform>
+    <ProductVersion Condition="'$(ProductVersion)' == ''">0.5.0</ProductVersion>
+    <PublishDir Condition="'$(PublishDir)' == ''">$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..\bin\IENetworkInspector-Unified'))</PublishDir>
+    <DefineConstants>ProductVersion=$(ProductVersion);PublishDir=$(PublishDir)</DefineConstants>
+    <OutputName>IENetworkInspector-$(ProductVersion)-win-x64</OutputName>
+    <OutputPath>$(MSBuildThisFileDirectory)..\bin\Installer\</OutputPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="WixToolset.UI.wixext" Version="5.0.2" />
+  </ItemGroup>
+
+  <Target Name="ValidatePublishOutput" BeforeTargets="Build">
+    <Error Condition="!Exists('$(PublishDir)\IENetworkInspector.exe')" Text="Missing x64 application output. Run Build-Unified.cmd first." />
+    <Error Condition="!Exists('$(PublishDir)\workers\x86\IENetworkInspector.exe')" Text="Missing x86 worker output. Run Build-Unified.cmd first." />
+  </Target>
+</Project>
