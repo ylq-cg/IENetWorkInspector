@@ -359,6 +359,14 @@ check the Log tab. Capture and non-HTML inspectors remain available without it.
   request headers.
 - Forced termination can leave an incomplete final journal record.
 
+## License
+
+IE Network Inspector is licensed under the
+[BSD Zero Clause License (0BSD)](LICENSE). You may use, copy, modify, and
+distribute the software for any purpose, with or without fee, without an
+attribution requirement. The software is provided without warranty. Third-party
+dependencies and platform components remain subject to their own licenses.
+
 ## Command Line
 
 Run CLI capture from an elevated terminal using the executable whose architecture
