@@ -16,12 +16,12 @@ proxy, service, certificate, or browser extension.
 
 ## Download
 
-The current public binary is the **v0.5.0 unified pre-release** on the
-[v0.5.0 release page](https://github.com/ylq-cg/IENetWorkInspector/releases/tag/v0.5.0).
-That release contains the unified ZIP and source archives; it does not contain
-an MSI. The repository can contain changes newer than the published release.
+The current public binaries are the **v0.6.0 pre-release** on the
+[v0.6.0 release page](https://github.com/ylq-cg/IENetWorkInspector/releases/tag/v0.6.0).
+That release contains the unified ZIP, x64 MSI, and source archives. The
+repository can contain changes newer than the published release.
 
-The release and locally built MSI are not code-signed. Follow your organization's
+The release assets are not code-signed. Follow your organization's
 software approval policy before running either package. Build the current unified
 package or MSI from source using the commands under **Build from Source**.
 
@@ -32,12 +32,10 @@ isolated HTML response preview and is normally installed with Microsoft Edge.
 
 ## Install
 
-### Locally built MSI package
+### MSI package
 
-The v0.5.0 release does not publish an MSI. If you build one from this repository
-or receive one through an approved distribution channel, close any running
-IE Network Inspector instance, open the MSI, and approve the UAC prompt. It is a
-per-machine x64 package that installs to:
+Close any running IE Network Inspector instance, open the MSI, and approve the
+UAC prompt. It is a per-machine x64 package that installs to:
 
 ```text
 %ProgramFiles%\IE Network Inspector
